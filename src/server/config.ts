@@ -7,12 +7,26 @@ export interface AppConfig {
   appBaseUrl: string;
   databasePath: string;
   dashboardTitle: string;
+  slack: SlackAuthConfig;
   discordToken: string | null;
   discordClientId: string | null;
   discordMockMode: boolean;
   guildAllowlist: string[];
   channelAllowlist: string[];
+  authConfigErrors: string[];
   configErrors: string[];
+}
+
+export interface SlackAuthConfig {
+  clientId: string | null;
+  clientSecret: string | null;
+  redirectUri: string;
+  teamId: string | null;
+  allowedUserIds: string[];
+  allowWorkspace: boolean;
+  sessionSecret: string | null;
+  sessionCookieName: string;
+  stateCookieName: string;
 }
 
 const REQUIRED_GATEWAY_INTENTS = ["Guilds", "GuildMessages", "MessageContent"];
@@ -70,6 +84,7 @@ export function loadConfig(rootDir = process.cwd()): AppConfig {
   loadDotEnvFile(resolve(rootDir, ".env.local"));
 
   const port = readPositiveIntEnv("UNDERCOVER_PORT", 4318);
+  const appBaseUrl = readOptionalEnv("UNDERCOVER_APP_BASE_URL") ?? `http://127.0.0.1:${port}`;
   const databasePath = readOptionalEnv("UNDERCOVER_DATABASE_PATH") ?? ".data/undercover-seosoyoung.sqlite";
   const resolvedDatabasePath = databasePath === ":memory:" ? databasePath : resolve(rootDir, databasePath);
   if (resolvedDatabasePath !== ":memory:") {
@@ -79,18 +94,23 @@ export function loadConfig(rootDir = process.cwd()): AppConfig {
   const discordToken = readOptionalEnv("DISCORD_BOT_TOKEN");
   const explicitMockMode = readBooleanEnv("DISCORD_MOCK_MODE");
   const discordMockMode = explicitMockMode ?? !discordToken;
-  const configErrors = !discordMockMode && !discordToken ? ["DISCORD_BOT_TOKEN is required when DISCORD_MOCK_MODE=false"] : [];
+  const discordConfigErrors = !discordMockMode && !discordToken ? ["DISCORD_BOT_TOKEN is required when DISCORD_MOCK_MODE=false"] : [];
+  const slack = loadSlackAuthConfig(appBaseUrl);
+  const authConfigErrors = validateSlackAuthConfig(appBaseUrl, slack);
+  const configErrors = [...discordConfigErrors, ...authConfigErrors];
 
   return {
     port,
-    appBaseUrl: readOptionalEnv("UNDERCOVER_APP_BASE_URL") ?? `http://127.0.0.1:${port}`,
+    appBaseUrl,
     databasePath: resolvedDatabasePath,
     dashboardTitle: readOptionalEnv("UNDERCOVER_DASHBOARD_TITLE") ?? "암행 서소영",
+    slack,
     discordToken,
     discordClientId: readOptionalEnv("DISCORD_CLIENT_ID"),
     discordMockMode,
     guildAllowlist: readCsvEnv("DISCORD_GUILD_ALLOWLIST"),
     channelAllowlist: readCsvEnv("DISCORD_CHANNEL_ALLOWLIST"),
+    authConfigErrors,
     configErrors
   };
 }
@@ -107,6 +127,13 @@ export function configToSettings(config: AppConfig): AppSettings {
     appBaseUrl: config.appBaseUrl,
     guildAllowlist: config.guildAllowlist,
     channelAllowlist: config.channelAllowlist,
+    auth: {
+      loginRequired: true,
+      slackConfigured: config.authConfigErrors.length === 0,
+      allowedUserIds: [...config.slack.allowedUserIds],
+      allowWorkspace: config.slack.allowWorkspace,
+      teamIdConfigured: Boolean(config.slack.teamId)
+    },
     discord: {
       readOnly: true,
       outboundEnabled: false,
@@ -118,4 +145,39 @@ export function configToSettings(config: AppConfig): AppSettings {
       configErrors: [...config.configErrors]
     }
   };
+}
+
+function loadSlackAuthConfig(appBaseUrl: string): SlackAuthConfig {
+  return {
+    clientId: readOptionalEnv("SLACK_CLIENT_ID"),
+    clientSecret: readOptionalEnv("SLACK_CLIENT_SECRET"),
+    redirectUri: readOptionalEnv("SLACK_REDIRECT_URI") ?? new URL("/auth/slack/callback", appBaseUrl).toString(),
+    teamId: readOptionalEnv("SLACK_TEAM_ID"),
+    allowedUserIds: readCsvEnv("UNDERCOVER_ALLOWED_SLACK_USER_IDS"),
+    allowWorkspace: readBooleanEnv("UNDERCOVER_ALLOW_WORKSPACE") ?? false,
+    sessionSecret: readOptionalEnv("UNDERCOVER_SESSION_SECRET"),
+    sessionCookieName: "undercover_session",
+    stateCookieName: "undercover_oauth_state"
+  };
+}
+
+function validateSlackAuthConfig(appBaseUrl: string, slack: SlackAuthConfig): string[] {
+  const errors: string[] = [];
+  if (!slack.clientId) errors.push("SLACK_CLIENT_ID is required");
+  if (!slack.clientSecret) errors.push("SLACK_CLIENT_SECRET is required");
+  if (!slack.sessionSecret || slack.sessionSecret.length < 24) {
+    errors.push("UNDERCOVER_SESSION_SECRET must be at least 24 characters");
+  }
+  if (slack.allowWorkspace && !slack.teamId) {
+    errors.push("SLACK_TEAM_ID is required when UNDERCOVER_ALLOW_WORKSPACE=true");
+  }
+  if (isPublicBaseUrl(appBaseUrl) && slack.allowedUserIds.length === 0 && !slack.allowWorkspace) {
+    errors.push("Set UNDERCOVER_ALLOWED_SLACK_USER_IDS or UNDERCOVER_ALLOW_WORKSPACE=true before using a public base URL");
+  }
+  return errors;
+}
+
+function isPublicBaseUrl(value: string): boolean {
+  const url = new URL(value);
+  return !["localhost", "127.0.0.1", "::1"].includes(url.hostname);
 }

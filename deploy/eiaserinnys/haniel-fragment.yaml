@@ -1,0 +1,18 @@
+repos:
+  undercover-seosoyoung:
+    url: git@github.com:eiaserinnys/undercover-seosoyoung.git
+    branch: main
+    path: ./services/undercover-seosoyoung
+    auto_apply: false
+    pull_strategy: force
+
+services:
+  undercover-seosoyoung:
+    enabled: true
+    run: bash -lc 'set -a && source /home/eias/services/undercover-seosoyoung/shared/.env && set +a && exec /usr/bin/node dist/server/server/index.js'
+    cwd: ./services/undercover-seosoyoung
+    repo: undercover-seosoyoung
+    ready: port:4318
+    restart_delay: 10
+    hooks:
+      post_pull: /home/eias/services/haniel/bin/build-undercover-seosoyoung.sh

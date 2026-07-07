@@ -47,12 +47,39 @@ export interface DiscordPermissionStatus {
   configErrors: string[];
 }
 
+export interface AuthSettings {
+  loginRequired: true;
+  slackConfigured: boolean;
+  allowedUserIds: string[];
+  allowWorkspace: boolean;
+  teamIdConfigured: boolean;
+}
+
+export interface AuthenticatedUser {
+  slackUserId: string;
+  slackTeamId: string | null;
+  name: string;
+  email: string | null;
+  avatarUrl: string | null;
+}
+
+export type MeResponse =
+  | {
+      authenticated: true;
+      user: AuthenticatedUser;
+    }
+  | {
+      authenticated: false;
+      error: "unauthorized";
+    };
+
 export interface AppSettings {
   serviceName: "undercover-seosoyoung";
   dashboardTitle: string;
   appBaseUrl: string;
   guildAllowlist: string[];
   channelAllowlist: string[];
+  auth: AuthSettings;
   discord: DiscordPermissionStatus;
 }
 

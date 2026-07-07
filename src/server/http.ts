@@ -1,15 +1,17 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
+import { createAuthService, type AuthService } from "./auth.js";
 import type { AppConfig } from "./config.js";
 import { collectorMode, configToSettings } from "./config.js";
 import type { AppDatabase } from "./database.js";
-import type { DiscordMessageStatus, HealthResponse, MessageListResponse } from "../shared/types.js";
+import type { DiscordMessageStatus, HealthResponse, MeResponse, MessageListResponse } from "../shared/types.js";
 
 export interface ApiContext {
   config: AppConfig;
   db: AppDatabase;
   staticDir: string;
+  auth?: AuthService;
 }
 
 type JsonValue = unknown;
@@ -26,6 +28,7 @@ const contentTypes: Record<string, string> = {
 };
 
 export function createAppServer(context: ApiContext) {
+  const auth = context.auth ?? createAuthService(context.config);
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
@@ -33,8 +36,23 @@ export function createAppServer(context: ApiContext) {
         sendJson(response, context.config.configErrors.length > 0 ? 503 : 200, buildHealth(context));
         return;
       }
+      if (await auth.handleAuthRoute(request, response, url)) {
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/me") {
+        handleMe(auth, request, response);
+        return;
+      }
       if (url.pathname.startsWith("/api/")) {
+        if (!auth.currentUser(request)) {
+          auth.rejectUnauthenticated(response);
+          return;
+        }
         await handleApi(context, request, response, url);
+        return;
+      }
+      if (url.pathname.startsWith("/auth/")) {
+        sendJson(response, 404, { error: "Not found" });
         return;
       }
       serveStatic(context.staticDir, url.pathname, response);
@@ -42,6 +60,17 @@ export function createAppServer(context: ApiContext) {
       sendJson(response, 500, { error: error instanceof Error ? error.message : "Unknown server error" });
     }
   });
+}
+
+function handleMe(auth: AuthService, request: IncomingMessage, response: ServerResponse): void {
+  const user = auth.currentUser(request);
+  if (!user) {
+    const payload: MeResponse = { authenticated: false, error: "unauthorized" };
+    sendJson(response, 401, payload);
+    return;
+  }
+  const payload: MeResponse = { authenticated: true, user };
+  sendJson(response, 200, payload);
 }
 
 async function handleApi(context: ApiContext, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {

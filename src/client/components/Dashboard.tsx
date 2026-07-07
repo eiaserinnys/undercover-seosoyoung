@@ -1,14 +1,16 @@
-import type { AppSettings, DiscordMessageRecord, MessageListResponse } from "../../shared/types.js";
+import type { AppSettings, AuthenticatedUser, DiscordMessageRecord, MessageListResponse } from "../../shared/types.js";
 
 export interface DashboardProps {
   settings: AppSettings | null;
   messageData: MessageListResponse;
   selectedChannelId: string;
   error: string | null;
+  user?: AuthenticatedUser | null;
+  onLogout?: () => void;
   onSelectChannel(channelId: string): void;
 }
 
-export function Dashboard({ settings, messageData, selectedChannelId, error, onSelectChannel }: DashboardProps) {
+export function Dashboard({ settings, messageData, selectedChannelId, error, user, onLogout, onSelectChannel }: DashboardProps) {
   const modeLabel = settings?.discord.mode === "live" ? "Live Gateway" : settings?.discord.mode === "configuration_error" ? "설정 확인 필요" : "Mock mode";
   return (
     <main className="dashboard-shell">
@@ -17,6 +19,7 @@ export function Dashboard({ settings, messageData, selectedChannelId, error, onS
           <p className="eyebrow">Discord Ops</p>
           <h1>{settings?.dashboardTitle ?? "암행 서소영"}</h1>
         </div>
+        {user ? <UserPanel user={user} onLogout={onLogout} /> : null}
         <ReadOnlyBadge modeLabel={modeLabel} />
         <section className="filter-panel" aria-label="채널 필터">
           <button className={!selectedChannelId ? "filter active" : "filter"} type="button" onClick={() => onSelectChannel("")}>
@@ -57,6 +60,23 @@ export function Dashboard({ settings, messageData, selectedChannelId, error, onS
         </div>
       </section>
     </main>
+  );
+}
+
+function UserPanel({ user, onLogout }: { user: AuthenticatedUser; onLogout?: () => void }) {
+  return (
+    <section className="user-panel" aria-label="로그인 사용자">
+      {user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : <div className="avatar-fallback">{user.name.slice(0, 1)}</div>}
+      <div>
+        <strong>{user.name}</strong>
+        <span>{user.email ?? user.slackUserId}</span>
+      </div>
+      {onLogout ? (
+        <button type="button" onClick={onLogout} aria-label="로그아웃">
+          로그아웃
+        </button>
+      ) : null}
+    </section>
   );
 }
 

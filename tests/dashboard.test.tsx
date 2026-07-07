@@ -1,6 +1,7 @@
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Dashboard } from "../src/client/components/Dashboard.js";
+import { LoginScreen } from "../src/client/components/LoginScreen.js";
 import type { AppSettings, MessageListResponse } from "../src/shared/types.js";
 
 const settings: AppSettings = {
@@ -9,6 +10,13 @@ const settings: AppSettings = {
   appBaseUrl: "http://127.0.0.1:4318",
   guildAllowlist: ["guild-1"],
   channelAllowlist: ["channel-1"],
+  auth: {
+    loginRequired: true,
+    slackConfigured: true,
+    allowedUserIds: ["U08HWT0C6K1"],
+    allowWorkspace: false,
+    teamIdConfigured: true
+  },
   discord: {
     readOnly: true,
     outboundEnabled: false,
@@ -67,5 +75,15 @@ describe("Dashboard smoke", () => {
     expect(html).toContain("Discord에서 열기");
     expect(html).not.toContain("답장");
     expect(html).not.toContain("전송");
+  });
+});
+
+describe("Login screen", () => {
+  it("offers Slack login without rendering inbox content", () => {
+    const html = renderToString(<LoginScreen error={null} />);
+
+    expect(html).toContain("Slack으로 로그인");
+    expect(html).not.toContain("원문 인박스");
+    expect(html).not.toContain("Discord에서 열기");
   });
 });

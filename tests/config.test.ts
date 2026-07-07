@@ -21,4 +21,41 @@ describe("configuration", () => {
 
     expect(loadConfig(process.cwd()).port).toBe(4500);
   });
+
+  it("requires an explicit Slack access policy before public deployment", () => {
+    process.env.UNDERCOVER_APP_BASE_URL = "https://undercover.eiaserinnys.me";
+    process.env.UNDERCOVER_SESSION_SECRET = "test-secret-with-enough-entropy";
+    process.env.SLACK_CLIENT_ID = "123.456";
+    process.env.SLACK_CLIENT_SECRET = "client-secret";
+
+    expect(loadConfig(process.cwd()).configErrors).toContain(
+      "Set UNDERCOVER_ALLOWED_SLACK_USER_IDS or UNDERCOVER_ALLOW_WORKSPACE=true before using a public base URL"
+    );
+  });
+
+  it("requires a Slack team id for workspace-wide access", () => {
+    process.env.UNDERCOVER_APP_BASE_URL = "https://undercover.eiaserinnys.me";
+    process.env.UNDERCOVER_SESSION_SECRET = "test-secret-with-enough-entropy";
+    process.env.SLACK_CLIENT_ID = "123.456";
+    process.env.SLACK_CLIENT_SECRET = "client-secret";
+    process.env.UNDERCOVER_ALLOW_WORKSPACE = "true";
+
+    expect(loadConfig(process.cwd()).configErrors).toContain("SLACK_TEAM_ID is required when UNDERCOVER_ALLOW_WORKSPACE=true");
+  });
+
+  it("parses Slack user allowlist without requiring workspace-wide access", () => {
+    process.env.UNDERCOVER_APP_BASE_URL = "https://undercover.eiaserinnys.me";
+    process.env.UNDERCOVER_SESSION_SECRET = "test-secret-with-enough-entropy";
+    process.env.SLACK_CLIENT_ID = "123.456";
+    process.env.SLACK_CLIENT_SECRET = "client-secret";
+    process.env.UNDERCOVER_ALLOWED_SLACK_USER_IDS = "U08HWT0C6K1,U123";
+
+    const config = loadConfig(process.cwd());
+
+    expect(config.slack.allowedUserIds).toEqual(["U08HWT0C6K1", "U123"]);
+    expect(config.slack.allowWorkspace).toBe(false);
+    expect(config.configErrors).not.toContain(
+      "Set UNDERCOVER_ALLOWED_SLACK_USER_IDS or UNDERCOVER_ALLOW_WORKSPACE=true before using a public base URL"
+    );
+  });
 });
