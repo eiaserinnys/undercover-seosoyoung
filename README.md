@@ -32,8 +32,10 @@ pnpm dev
 - `UNDERCOVER_APP_BASE_URL`: 대시보드 외부 기준 URL
 - `UNDERCOVER_DATABASE_PATH`: SQLite 파일 경로
 - `UNDERCOVER_SESSION_SECRET`: Slack 로그인 세션 쿠키 암호화 secret
-- `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`: Sign in with Slack 앱 credential
-- `SLACK_REDIRECT_URI`: `https://undercover.eiaserinnys.me/auth/slack/callback`
+- `UNDERCOVER_CORKSHEET_SSO_START_URL`: Corksheet SSO 브리지 시작 URL. 프로덕션은 `https://corksheet.eiaserinnys.me/auth/undercover/start`
+- `UNDERCOVER_SSO_BRIDGE_SECRET`: Corksheet가 발급한 단기 handoff token 검증 secret. Corksheet와 같은 값
+- `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`: 직접 Slack OAuth를 쓸 때의 Sign in with Slack 앱 credential. Corksheet SSO 브리지 모드에서는 필요하지 않음
+- `SLACK_REDIRECT_URI`: 직접 Slack OAuth 콜백. Corksheet SSO 브리지 모드에서는 사용하지 않음
 - `SLACK_TEAM_ID`: workspace-wide 허용 시 검사할 Slack workspace/team ID
 - `UNDERCOVER_ALLOWED_SLACK_USER_IDS`: 쉼표 구분 Slack user ID allowlist
 - `UNDERCOVER_ALLOW_WORKSPACE`: `true`면 `SLACK_TEAM_ID` workspace 전체 허용
@@ -54,9 +56,30 @@ pnpm dev
 - `GET /api/settings`
 - `GET /auth/slack`
 - `GET /auth/slack/callback`
+- `GET /auth/corksheet/callback`
 - `POST /auth/logout`
 
 쓰기 API는 없습니다. Discord 발신 endpoint도 없습니다.
+
+## Slack 로그인 운영 흐름
+
+프로덕션 Slack 앱에는 새 redirect URL을 추가하지 않는다. Undercover는 Corksheet의 기존 Slack 앱과 콜백을 SSO 브리지로 재사용한다.
+
+1. Undercover `/auth/slack`이 `UNDERCOVER_CORKSHEET_SSO_START_URL`로 이동한다.
+2. Corksheet `/auth/undercover/start`가 기존 Better-Auth Slack 로그인을 시작한다.
+3. Slack은 기존 등록 콜백 `https://corksheet.eiaserinnys.me/auth/callback/slack`으로만 돌아온다.
+4. Corksheet `/auth/undercover/complete`가 60초 handoff token을 발급해 Undercover `/auth/corksheet/callback`으로 돌려보낸다.
+5. Undercover가 token을 검증하고 allowlist/team 정책을 적용한 뒤 `undercover_session` 쿠키를 발급한다.
+
+브리지 모드에서 Undercover에 필요한 운영 env:
+
+```dotenv
+UNDERCOVER_CORKSHEET_SSO_START_URL=https://corksheet.eiaserinnys.me/auth/undercover/start
+UNDERCOVER_SSO_BRIDGE_SECRET=
+UNDERCOVER_SESSION_SECRET=
+UNDERCOVER_ALLOWED_SLACK_USER_IDS=U08HWT0C6K1
+UNDERCOVER_ALLOW_WORKSPACE=false
+```
 
 ## Discord 권한
 
@@ -137,9 +160,8 @@ UNDERCOVER_APP_BASE_URL=https://undercover.eiaserinnys.me
 UNDERCOVER_DATABASE_PATH=/home/eias/services/undercover-seosoyoung/shared/undercover-seosoyoung.sqlite
 UNDERCOVER_DASHBOARD_TITLE=암행 서소영
 
-SLACK_CLIENT_ID=
-SLACK_CLIENT_SECRET=
-SLACK_REDIRECT_URI=https://undercover.eiaserinnys.me/auth/slack/callback
+UNDERCOVER_CORKSHEET_SSO_START_URL=https://corksheet.eiaserinnys.me/auth/undercover/start
+UNDERCOVER_SSO_BRIDGE_SECRET=
 SLACK_TEAM_ID=
 UNDERCOVER_SESSION_SECRET=
 UNDERCOVER_ALLOWED_SLACK_USER_IDS=U08HWT0C6K1
@@ -158,7 +180,7 @@ DISCORD_CLIENT_ID=
 - DNS: `undercover.eiaserinnys.me` → eiaserinnys 노드 public IP
 - nginx: `xops.eiaserinnys.me`와 같은 reverse proxy 형태로 `http://127.0.0.1:4318`에 연결
 - TLS: DNS 전파 후 `certbot --nginx -d undercover.eiaserinnys.me`
-- Slack app redirect URL: `https://undercover.eiaserinnys.me/auth/slack/callback`
+- Slack app redirect URL 추가 없음. 기존 Corksheet 콜백 `https://corksheet.eiaserinnys.me/auth/callback/slack`을 재사용
 - Node runtime: eiaserinnys 기본 `/usr/bin/node`는 Node 20일 수 있으므로, hook이 shared 폴더에 Node 24.18.0을 준비하고 서비스도 그 바이너리로 실행합니다.
 
 nginx server block 예시:

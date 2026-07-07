@@ -44,6 +44,17 @@ interface SessionClaims {
   nonce: string;
 }
 
+export interface CorksheetHandoffClaims {
+  expiresAt: number;
+  user: AuthenticatedUser;
+  nonce: string;
+  next: string;
+}
+
+export function sealCorksheetHandoffClaimsForTest(claims: CorksheetHandoffClaims, secret: string): string {
+  return sealJson<CorksheetHandoffClaims>(claims, secret);
+}
+
 export function createAuthService(config: AppConfig, slackClient: SlackOAuthClient = createSlackOAuthClient(config)): AuthService {
   return {
     currentUser(request) {
@@ -58,6 +69,11 @@ export function createAuthService(config: AppConfig, slackClient: SlackOAuthClie
 
       if (request.method === "GET" && url.pathname === "/auth/slack/callback") {
         await handleSlackCallback(config, slackClient, request, response, url);
+        return true;
+      }
+
+      if (request.method === "GET" && url.pathname === "/auth/corksheet/callback") {
+        handleCorksheetCallback(config, response, url);
         return true;
       }
 
@@ -80,8 +96,16 @@ export function createAuthService(config: AppConfig, slackClient: SlackOAuthClie
 function handleSlackStart(config: AppConfig, request: IncomingMessage, response: ServerResponse, url: URL): void {
   if (!ensureAuthConfigured(config, response)) return;
 
-  const state = randomUUID();
   const next = sanitizeNextPath(url.searchParams.get("next") ?? request.headers.referer ?? "/");
+  if (config.slack.corksheetSsoStartUrl) {
+    const startUrl = new URL(config.slack.corksheetSsoStartUrl);
+    startUrl.searchParams.set("next", next);
+    response.writeHead(303, { location: startUrl.toString() });
+    response.end();
+    return;
+  }
+
+  const state = randomUUID();
   const sealedState = sealJson<OAuthState>(
     {
       expiresAt: Date.now() + OAUTH_STATE_TTL_SECONDS * 1000,
@@ -101,6 +125,41 @@ function handleSlackStart(config: AppConfig, request: IncomingMessage, response:
   response.writeHead(303, {
     location: slackUrl.toString(),
     "set-cookie": cookie(config.slack.stateCookieName, sealedState, OAUTH_STATE_TTL_SECONDS)
+  });
+  response.end();
+}
+
+function handleCorksheetCallback(config: AppConfig, response: ServerResponse, url: URL): void {
+  if (!ensureAuthConfigured(config, response)) return;
+  if (!config.slack.corksheetHandoffSecret) {
+    sendHtml(response, 503, "Slack login is not configured", "UNDERCOVER_SSO_BRIDGE_SECRET is required.");
+    return;
+  }
+
+  const token = url.searchParams.get("token");
+  const claims = token ? unsealJson<CorksheetHandoffClaims>(token, config.slack.corksheetHandoffSecret) : null;
+  if (!claims || !isCorksheetHandoffClaims(claims) || claims.expiresAt <= Date.now()) {
+    sendHtml(response, 401, "Slack login failed", "The Corksheet handoff token is invalid or expired.");
+    return;
+  }
+
+  const authorization = authorizeSlackIdentity(config, claims.user);
+  if (!authorization.ok) {
+    sendHtml(response, 403, "Slack login denied", authorization.reason);
+    return;
+  }
+
+  const session = sealJson<SessionClaims>(
+    {
+      expiresAt: Date.now() + SESSION_TTL_SECONDS * 1000,
+      user: claims.user,
+      nonce: randomUUID()
+    },
+    config.slack.sessionSecret
+  );
+  response.writeHead(303, {
+    location: sanitizeNextPath(claims.next),
+    "set-cookie": cookie(config.slack.sessionCookieName, session, SESSION_TTL_SECONDS)
   });
   response.end();
 }
@@ -239,6 +298,23 @@ function authorizeSlackIdentity(config: AppConfig, identity: Pick<SlackIdentity,
 
   if (config.slack.allowWorkspace) return { ok: true };
   return { ok: false, reason: "No Slack access policy is configured." };
+}
+
+function isCorksheetHandoffClaims(value: unknown): value is CorksheetHandoffClaims {
+  if (!value || typeof value !== "object") return false;
+  const claims = value as CorksheetHandoffClaims;
+  const user = claims.user;
+  return (
+    typeof claims.expiresAt === "number" &&
+    typeof claims.next === "string" &&
+    typeof claims.nonce === "string" &&
+    Boolean(user) &&
+    typeof user.slackUserId === "string" &&
+    (typeof user.slackTeamId === "string" || user.slackTeamId === null) &&
+    typeof user.name === "string" &&
+    (typeof user.email === "string" || user.email === null) &&
+    (typeof user.avatarUrl === "string" || user.avatarUrl === null)
+  );
 }
 
 function ensureAuthConfigured(config: AppConfig, response: ServerResponse): boolean {

@@ -58,4 +58,16 @@ describe("configuration", () => {
       "Set UNDERCOVER_ALLOWED_SLACK_USER_IDS or UNDERCOVER_ALLOW_WORKSPACE=true before using a public base URL"
     );
   });
+
+  it("allows Corksheet SSO bridge without a direct Slack client secret", () => {
+    process.env.UNDERCOVER_APP_BASE_URL = "https://undercover.eiaserinnys.me";
+    process.env.UNDERCOVER_SESSION_SECRET = "test-secret-with-enough-entropy";
+    process.env.UNDERCOVER_CORKSHEET_SSO_START_URL = "https://corksheet.eiaserinnys.me/auth/undercover/start";
+    process.env.UNDERCOVER_SSO_BRIDGE_SECRET = "bridge-secret-with-enough-entropy";
+    process.env.UNDERCOVER_ALLOWED_SLACK_USER_IDS = "U08HWT0C6K1";
+    delete process.env.SLACK_CLIENT_ID;
+    delete process.env.SLACK_CLIENT_SECRET;
+
+    expect(loadConfig(process.cwd()).configErrors).toEqual([]);
+  });
 });

@@ -1,6 +1,11 @@
 import { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { createAuthService, type SlackIdentity, type SlackOAuthClient } from "../src/server/auth.js";
+import {
+  createAuthService,
+  sealCorksheetHandoffClaimsForTest,
+  type SlackIdentity,
+  type SlackOAuthClient
+} from "../src/server/auth.js";
 import { loadConfig } from "../src/server/config.js";
 import { AppDatabase } from "../src/server/database.js";
 import { createAppServer } from "../src/server/http.js";
@@ -13,7 +18,7 @@ afterEach(() => {
   process.env = { ...originalEnv };
 });
 
-async function startServer(slackClient: SlackOAuthClient = fakeSlackClient()) {
+async function startServer(slackClient: SlackOAuthClient = fakeSlackClient(), options: { bridge?: boolean; allowWorkspace?: boolean } = {}) {
   process.env.UNDERCOVER_DATABASE_PATH = ":memory:";
   process.env.DISCORD_MOCK_MODE = "true";
   process.env.UNDERCOVER_APP_BASE_URL = "https://undercover.eiaserinnys.me";
@@ -22,7 +27,12 @@ async function startServer(slackClient: SlackOAuthClient = fakeSlackClient()) {
   process.env.SLACK_CLIENT_SECRET = "client-secret";
   process.env.SLACK_REDIRECT_URI = "https://undercover.eiaserinnys.me/auth/slack/callback";
   process.env.SLACK_TEAM_ID = "T123";
-  process.env.UNDERCOVER_ALLOW_WORKSPACE = "true";
+  process.env.UNDERCOVER_ALLOWED_SLACK_USER_IDS = "U08HWT0C6K1";
+  process.env.UNDERCOVER_ALLOW_WORKSPACE = options.allowWorkspace === true ? "true" : "false";
+  if (options.bridge) {
+    process.env.UNDERCOVER_CORKSHEET_SSO_START_URL = "https://corksheet.eiaserinnys.me/auth/undercover/start";
+    process.env.UNDERCOVER_SSO_BRIDGE_SECRET = "bridge-secret-with-enough-entropy";
+  }
   const config = loadConfig(process.cwd());
 
   const db = new AppDatabase(":memory:", true);
@@ -79,6 +89,17 @@ describe("HTTP API", () => {
     expect(cookie).toContain("SameSite=Lax");
   });
 
+  it("starts Corksheet SSO instead of direct Slack auth when bridge mode is configured", async () => {
+    const baseUrl = await startServer(fakeSlackClient(), { bridge: true });
+    const response = await fetch(`${baseUrl}/auth/slack?next=/queue`, { redirect: "manual" });
+    const location = new URL(response.headers.get("location") ?? "");
+
+    expect(response.status).toBe(303);
+    expect(location.origin + location.pathname).toBe("https://corksheet.eiaserinnys.me/auth/undercover/start");
+    expect(location.searchParams.get("next")).toBe("/queue");
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
   it("sets a secure session after Slack callback and then serves protected APIs", async () => {
     const baseUrl = await startServer();
     const start = await fetch(`${baseUrl}/auth/slack`, { redirect: "manual" });
@@ -109,6 +130,59 @@ describe("HTTP API", () => {
       }
     });
   });
+
+  it("accepts a short-lived Corksheet handoff token and issues its own session", async () => {
+    const baseUrl = await startServer(fakeSlackClient(), { bridge: true });
+    const token = corksheetToken({
+      expiresAt: Date.now() + 60_000,
+      slackUserId: "U08HWT0C6K1",
+      next: "/inbox"
+    });
+
+    const callback = await fetch(`${baseUrl}/auth/corksheet/callback?token=${encodeURIComponent(token)}`, { redirect: "manual" });
+    const sessionCookie = callback.headers.get("set-cookie") ?? "";
+    const authedCookie = cookieHeader(sessionCookie);
+    const me = await fetch(`${baseUrl}/api/me`, { headers: { cookie: authedCookie } }).then((response) => response.json());
+
+    expect(callback.status).toBe(303);
+    expect(callback.headers.get("location")).toBe("/inbox");
+    expect(sessionCookie).toContain("undercover_session=");
+    expect(me).toMatchObject({
+      authenticated: true,
+      user: {
+        slackUserId: "U08HWT0C6K1",
+        name: "Director"
+      }
+    });
+  });
+
+  it("rejects expired Corksheet handoff tokens", async () => {
+    const baseUrl = await startServer(fakeSlackClient(), { bridge: true });
+    const token = corksheetToken({
+      expiresAt: Date.now() - 1,
+      slackUserId: "U08HWT0C6K1",
+      next: "/"
+    });
+
+    const callback = await fetch(`${baseUrl}/auth/corksheet/callback?token=${encodeURIComponent(token)}`, { redirect: "manual" });
+
+    expect(callback.status).toBe(401);
+    expect(callback.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("rejects Corksheet handoff users outside the Undercover allowlist", async () => {
+    const baseUrl = await startServer(fakeSlackClient(), { bridge: true });
+    const token = corksheetToken({
+      expiresAt: Date.now() + 60_000,
+      slackUserId: "UOTHER",
+      next: "/"
+    });
+
+    const callback = await fetch(`${baseUrl}/auth/corksheet/callback?token=${encodeURIComponent(token)}`, { redirect: "manual" });
+
+    expect(callback.status).toBe(403);
+    expect(callback.headers.get("set-cookie")).toBeNull();
+  });
 });
 
 function fakeSlackClient(overrides: Partial<SlackIdentity> = {}): SlackOAuthClient {
@@ -131,4 +205,22 @@ function fakeSlackClient(overrides: Partial<SlackIdentity> = {}): SlackOAuthClie
 
 function cookieHeader(setCookie: string): string {
   return setCookie.split(";")[0];
+}
+
+function corksheetToken(input: { expiresAt: number; slackUserId: string; next: string; slackTeamId?: string | null }): string {
+  return sealCorksheetHandoffClaimsForTest(
+    {
+      expiresAt: input.expiresAt,
+      nonce: "handoff-1",
+      next: input.next,
+      user: {
+        slackUserId: input.slackUserId,
+        slackTeamId: input.slackTeamId ?? "T123",
+        name: "Director",
+        email: "director@example.com",
+        avatarUrl: null
+      }
+    },
+    "bridge-secret-with-enough-entropy"
+  );
 }

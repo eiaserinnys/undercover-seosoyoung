@@ -25,6 +25,8 @@ export interface SlackAuthConfig {
   allowedUserIds: string[];
   allowWorkspace: boolean;
   sessionSecret: string | null;
+  corksheetSsoStartUrl: string | null;
+  corksheetHandoffSecret: string | null;
   sessionCookieName: string;
   stateCookieName: string;
 }
@@ -156,6 +158,8 @@ function loadSlackAuthConfig(appBaseUrl: string): SlackAuthConfig {
     allowedUserIds: readCsvEnv("UNDERCOVER_ALLOWED_SLACK_USER_IDS"),
     allowWorkspace: readBooleanEnv("UNDERCOVER_ALLOW_WORKSPACE") ?? false,
     sessionSecret: readOptionalEnv("UNDERCOVER_SESSION_SECRET"),
+    corksheetSsoStartUrl: readOptionalEnv("UNDERCOVER_CORKSHEET_SSO_START_URL"),
+    corksheetHandoffSecret: readOptionalEnv("UNDERCOVER_SSO_BRIDGE_SECRET"),
     sessionCookieName: "undercover_session",
     stateCookieName: "undercover_oauth_state"
   };
@@ -163,8 +167,15 @@ function loadSlackAuthConfig(appBaseUrl: string): SlackAuthConfig {
 
 function validateSlackAuthConfig(appBaseUrl: string, slack: SlackAuthConfig): string[] {
   const errors: string[] = [];
-  if (!slack.clientId) errors.push("SLACK_CLIENT_ID is required");
-  if (!slack.clientSecret) errors.push("SLACK_CLIENT_SECRET is required");
+  const usesCorksheetSso = Boolean(slack.corksheetSsoStartUrl);
+  if (usesCorksheetSso) {
+    if (!slack.corksheetHandoffSecret || slack.corksheetHandoffSecret.length < 24) {
+      errors.push("UNDERCOVER_SSO_BRIDGE_SECRET must be at least 24 characters");
+    }
+  } else {
+    if (!slack.clientId) errors.push("SLACK_CLIENT_ID is required");
+    if (!slack.clientSecret) errors.push("SLACK_CLIENT_SECRET is required");
+  }
   if (!slack.sessionSecret || slack.sessionSecret.length < 24) {
     errors.push("UNDERCOVER_SESSION_SECRET must be at least 24 characters");
   }
