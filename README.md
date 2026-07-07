@@ -88,7 +88,7 @@ repos:
 services:
   undercover-seosoyoung:
     enabled: true
-    run: bash -lc 'set -a && source /home/eias/services/undercover-seosoyoung/shared/.env && set +a && exec /usr/bin/node dist/server/server/index.js'
+    run: bash -lc 'set -a && source /home/eias/services/undercover-seosoyoung/shared/.env && set +a && exec /home/eias/services/undercover-seosoyoung/shared/node-v24.18.0-linux-x64/bin/node dist/server/server/index.js'
     cwd: ./services/undercover-seosoyoung
     repo: undercover-seosoyoung
     ready: port:4318
@@ -105,13 +105,25 @@ set -euo pipefail
 
 APP_DIR="/home/eias/services/haniel/services/undercover-seosoyoung"
 ENV_FILE="/home/eias/services/undercover-seosoyoung/shared/.env"
+SHARED_DIR="/home/eias/services/undercover-seosoyoung/shared"
+NODE_VERSION="24.18.0"
+NODE_DIR="$SHARED_DIR/node-v${NODE_VERSION}-linux-x64"
+NODE_TARBALL="$SHARED_DIR/node-v${NODE_VERSION}-linux-x64.tar.xz"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Missing undercover-seosoyoung env file: $ENV_FILE" >&2
   exit 1
 fi
 
+if [[ ! -x "$NODE_DIR/bin/node" ]]; then
+  mkdir -p "$SHARED_DIR"
+  curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "$NODE_TARBALL"
+  tar -xJf "$NODE_TARBALL" -C "$SHARED_DIR"
+fi
+
 unset NODE_CHANNEL_FD NODE_CHANNEL_SERIALIZATION_MODE NODE_UNIQUE_ID
+
+export PATH="$NODE_DIR/bin:$PATH"
 
 pnpm --dir "$APP_DIR" install --frozen-lockfile
 pnpm --dir "$APP_DIR" build
@@ -147,6 +159,7 @@ DISCORD_CLIENT_ID=
 - nginx: `xops.eiaserinnys.me`와 같은 reverse proxy 형태로 `http://127.0.0.1:4318`에 연결
 - TLS: DNS 전파 후 `certbot --nginx -d undercover.eiaserinnys.me`
 - Slack app redirect URL: `https://undercover.eiaserinnys.me/auth/slack/callback`
+- Node runtime: eiaserinnys 기본 `/usr/bin/node`는 Node 20일 수 있으므로, hook이 shared 폴더에 Node 24.18.0을 준비하고 서비스도 그 바이너리로 실행합니다.
 
 nginx server block 예시:
 
