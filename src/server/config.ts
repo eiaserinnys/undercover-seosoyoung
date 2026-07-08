@@ -15,6 +15,7 @@ export interface AppConfig {
   channelAllowlist: string[];
   authConfigErrors: string[];
   configErrors: string[];
+  openAI: OpenAITranslationConfig;
 }
 
 export interface SlackAuthConfig {
@@ -31,9 +32,15 @@ export interface SlackAuthConfig {
   stateCookieName: string;
 }
 
+export interface OpenAITranslationConfig {
+  apiKey: string | null;
+  model: string;
+}
+
 const REQUIRED_GATEWAY_INTENTS = ["Guilds", "GuildMessages", "MessageContent"];
 const REQUIRED_BOT_PERMISSIONS = ["View Channels", "Read Message History"];
 const DISALLOWED_BOT_PERMISSIONS = ["Send Messages", "Manage Messages", "Use Webhooks"];
+const DEFAULT_OPENAI_TRANSLATE_MODEL = "gpt-5-mini";
 
 function loadDotEnvFile(path: string): void {
   if (!existsSync(path)) return;
@@ -97,9 +104,11 @@ export function loadConfig(rootDir = process.cwd()): AppConfig {
   const explicitMockMode = readBooleanEnv("DISCORD_MOCK_MODE");
   const discordMockMode = explicitMockMode ?? !discordToken;
   const discordConfigErrors = !discordMockMode && !discordToken ? ["DISCORD_BOT_TOKEN is required when DISCORD_MOCK_MODE=false"] : [];
+  const openAI = loadOpenAITranslationConfig();
+  const openAIConfigErrors = !discordMockMode && !openAI.apiKey ? ["OPENAI_API_KEY is required when DISCORD_MOCK_MODE=false"] : [];
   const slack = loadSlackAuthConfig(appBaseUrl);
   const authConfigErrors = validateSlackAuthConfig(appBaseUrl, slack);
-  const configErrors = [...discordConfigErrors, ...authConfigErrors];
+  const configErrors = [...discordConfigErrors, ...openAIConfigErrors, ...authConfigErrors];
 
   return {
     port,
@@ -113,7 +122,8 @@ export function loadConfig(rootDir = process.cwd()): AppConfig {
     guildAllowlist: readCsvEnv("DISCORD_GUILD_ALLOWLIST"),
     channelAllowlist: readCsvEnv("DISCORD_CHANNEL_ALLOWLIST"),
     authConfigErrors,
-    configErrors
+    configErrors,
+    openAI
   };
 }
 
@@ -162,6 +172,13 @@ function loadSlackAuthConfig(appBaseUrl: string): SlackAuthConfig {
     corksheetHandoffSecret: readOptionalEnv("UNDERCOVER_SSO_BRIDGE_SECRET"),
     sessionCookieName: "undercover_session",
     stateCookieName: "undercover_oauth_state"
+  };
+}
+
+function loadOpenAITranslationConfig(): OpenAITranslationConfig {
+  return {
+    apiKey: readOptionalEnv("OPENAI_API_KEY"),
+    model: readOptionalEnv("OPENAI_TRANSLATE_MODEL") ?? DEFAULT_OPENAI_TRANSLATE_MODEL
   };
 }
 

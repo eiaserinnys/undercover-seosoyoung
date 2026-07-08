@@ -2,6 +2,7 @@ import { Client, Events, GatewayIntentBits, Partials, type Message, type Partial
 import type { AppConfig } from "./config.js";
 import { buildDiscordDeeplink, type AppDatabase } from "./database.js";
 import type { DiscordMessageRecord } from "../shared/types.js";
+import type { MessageChangeResult } from "./database.js";
 
 export interface MessageCollector {
   mode: "mock" | "live" | "configuration_error";
@@ -32,6 +33,10 @@ export interface DiscordMessageLike {
   partial?: boolean;
 }
 
+export interface CollectorCallbacks {
+  onMessageChange?(change: MessageChangeResult): void;
+}
+
 export class NoopCollector implements MessageCollector {
   readonly mode: MessageCollector["mode"];
 
@@ -50,7 +55,8 @@ export class DiscordGatewayCollector implements MessageCollector {
 
   constructor(
     private readonly config: AppConfig,
-    private readonly db: AppDatabase
+    private readonly db: AppDatabase,
+    private readonly callbacks: CollectorCallbacks = {}
   ) {
     this.client = new Client({
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
@@ -83,20 +89,23 @@ export class DiscordGatewayCollector implements MessageCollector {
 
   private persistMessage(message: Message | PartialMessage, status: "active" | "edited"): void {
     const normalized = mapDiscordMessage(message as DiscordMessageLike, status, this.config);
-    if (normalized) this.db.upsertMessage(normalized);
+    if (!normalized) return;
+    const change = this.db.upsertMessage(normalized);
+    this.callbacks.onMessageChange?.(change);
   }
 
   private persistDelete(message: Message | PartialMessage): void {
     const basic = extractDeleteIdentity(message as DiscordMessageLike, this.config);
     if (!basic) return;
-    this.db.markDeleted({ ...basic, deletedAt: new Date().toISOString() });
+    const change = this.db.markDeleted({ ...basic, deletedAt: new Date().toISOString() });
+    this.callbacks.onMessageChange?.(change);
   }
 }
 
-export function createCollector(config: AppConfig, db: AppDatabase): MessageCollector {
+export function createCollector(config: AppConfig, db: AppDatabase, callbacks: CollectorCallbacks = {}): MessageCollector {
   if (config.configErrors.length > 0) return new NoopCollector("configuration_error");
   if (config.discordMockMode) return new NoopCollector("mock");
-  return new DiscordGatewayCollector(config, db);
+  return new DiscordGatewayCollector(config, db, callbacks);
 }
 
 export function isAllowedDiscordMessage(message: DiscordMessageLike, config: Pick<AppConfig, "guildAllowlist" | "channelAllowlist">): boolean {
@@ -134,6 +143,9 @@ export function mapDiscordMessage(
     authorAvatarUrl: message.author?.displayAvatarURL?.() ?? null,
     contentOriginal: message.content ?? "",
     translationKo: null,
+    translationStatus: message.content ? "pending" : "skipped",
+    translationError: null,
+    translatedAt: null,
     deeplink: buildDiscordDeeplink(message.guildId, parentChannelId ?? message.channelId, threadId, message.id),
     status,
     detectedLanguage: null,

@@ -4,12 +4,14 @@ import { extname, join, normalize } from "node:path";
 import { createAuthService, type AuthService } from "./auth.js";
 import type { AppConfig } from "./config.js";
 import { collectorMode, configToSettings } from "./config.js";
-import type { AppDatabase } from "./database.js";
-import type { DiscordMessageStatus, HealthResponse, MeResponse, MessageListResponse } from "../shared/types.js";
+import { messageEventId, type AppDatabase } from "./database.js";
+import type { MessageEventHub } from "./messageEvents.js";
+import type { DiscordMessageStatus, HealthResponse, MeResponse, MessageEventPayload, MessageListResponse } from "../shared/types.js";
 
 export interface ApiContext {
   config: AppConfig;
   db: AppDatabase;
+  messageEvents: MessageEventHub;
   staticDir: string;
   auth?: AuthService;
 }
@@ -88,13 +90,55 @@ async function handleApi(context: ApiContext, request: IncomingMessage, response
     const payload: MessageListResponse = {
       messages,
       channels: context.db.listChannels(),
-      total: context.db.messageCount()
+      total: context.db.messageCount(),
+      latestEventId: context.db.latestEventId()
     };
     sendJson(response, 200, payload);
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/message-events") {
+    handleMessageEvents(context, request, response, url);
+    return;
+  }
+
   sendJson(response, 404, { error: "Not found" });
+}
+
+function handleMessageEvents(context: ApiContext, request: IncomingMessage, response: ServerResponse, url: URL): void {
+  response.writeHead(200, {
+    "cache-control": "no-cache, no-transform",
+    "connection": "keep-alive",
+    "content-type": "text/event-stream; charset=utf-8",
+    "x-accel-buffering": "no"
+  });
+  response.write(": connected\n\n");
+
+  const lastEventId = request.headers["last-event-id"]?.toString() ?? url.searchParams.get("lastEventId");
+  const unsubscribe = context.messageEvents.subscribe((payload) => {
+    writeSseMessage(response, payload);
+  });
+  const keepAlive = setInterval(() => {
+    response.write(": keep-alive\n\n");
+  }, 25_000);
+  keepAlive.unref?.();
+  request.on("close", () => {
+    clearInterval(keepAlive);
+    unsubscribe();
+  });
+
+  for (const message of context.db.listMessagesAfterEventId(lastEventId, { limit: 200 })) {
+    writeSseMessage(response, {
+      eventId: messageEventId(message),
+      message
+    });
+  }
+}
+
+function writeSseMessage(response: ServerResponse, payload: MessageEventPayload): void {
+  response.write(`id: ${payload.eventId}\n`);
+  response.write("event: message\n");
+  response.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 function buildHealth(context: ApiContext): HealthResponse {

@@ -1,6 +1,6 @@
 # undercover-seosoyoung
 
-Discord 공식 서버를 더럽히지 않는 read-only 운영 대시보드입니다. MVP는 지정 guild/channel의 메시지를 수집해 SQLite에 저장하고, 내부 화면에서 원문과 Discord 딥링크를 확인하게 합니다.
+Discord 공식 서버를 더럽히지 않는 read-only 운영 대시보드입니다. 지정 guild/channel의 메시지를 수집해 SQLite에 저장하고, 내부 화면에서 원문·한국어 번역·Discord 딥링크를 확인하게 합니다.
 
 ## 원칙
 
@@ -43,6 +43,8 @@ pnpm dev
 - `DISCORD_MOCK_MODE`: `true`면 Gateway 연결 없이 seed 메시지 사용
 - `DISCORD_GUILD_ALLOWLIST`: 쉼표 구분 guild id
 - `DISCORD_CHANNEL_ALLOWLIST`: 쉼표 구분 channel id
+- `OPENAI_API_KEY`: live mode 번역에 필요한 OpenAI API key. `DISCORD_MOCK_MODE=false`일 때 필수
+- `OPENAI_TRANSLATE_MODEL`: 번역 모델. 기본 `gpt-5-mini`
 
 공개 URL(`https://undercover.eiaserinnys.me`)에서는 `UNDERCOVER_ALLOWED_SLACK_USER_IDS` 또는
 `UNDERCOVER_ALLOW_WORKSPACE=true` 중 하나가 반드시 명시되어야 합니다. workspace-wide 허용은
@@ -53,6 +55,7 @@ pnpm dev
 - `GET /healthz`
 - `GET /api/me`
 - `GET /api/messages?channelId=...&status=active|edited|deleted`
+- `GET /api/message-events`
 - `GET /api/settings`
 - `GET /auth/slack`
 - `GET /auth/slack/callback`
@@ -60,6 +63,21 @@ pnpm dev
 - `POST /auth/logout`
 
 쓰기 API는 없습니다. Discord 발신 endpoint도 없습니다.
+
+`/api/message-events`는 인증 뒤에서 동작하는 SSE 스트림입니다. `Last-Event-ID` 헤더 또는 `lastEventId` query를 기준으로 누락된 메시지 변경을 backfill하고, 이후 수집·수정·삭제·번역 완료 이벤트를 push합니다.
+
+## 번역 저장과 마이그레이션
+
+메시지 저장 시 `content_hash`를 함께 저장합니다. 원문이 바뀌지 않은 messageUpdate는 기존 번역을 보존하고, 원문이 바뀐 경우에만 `translation_status=pending`으로 되돌려 재번역합니다.
+
+기존 SQLite 파일은 앱 시작 시 다음 컬럼을 자동 추가합니다.
+
+- `content_hash`
+- `translation_status`
+- `translation_error`
+- `translated_at`
+
+수동 DB migration 명령은 필요 없습니다.
 
 ## Slack 로그인 운영 흐름
 
@@ -172,6 +190,9 @@ DISCORD_MOCK_MODE=true
 DISCORD_GUILD_ALLOWLIST=
 DISCORD_CHANNEL_ALLOWLIST=
 DISCORD_CLIENT_ID=
+
+OPENAI_API_KEY=
+OPENAI_TRANSLATE_MODEL=gpt-5-mini
 ```
 
 ## eiaserinnys 공개 준비

@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
-import { fetchMe, fetchMessages, fetchSettings, logout } from "./api.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Card } from "@astryxdesign/core/Card";
+import { VStack } from "@astryxdesign/core/Stack";
+import { Heading, Text } from "@astryxdesign/core/Text";
+import { fetchMe, fetchMessages, fetchSettings, logout, subscribeMessageEvents } from "./api.js";
 import { Dashboard } from "./components/Dashboard.js";
 import { LoginScreen } from "./components/LoginScreen.js";
 import type { AppSettings, AuthenticatedUser, MessageListResponse } from "../shared/types.js";
@@ -16,6 +19,21 @@ export function App({ initialSettings, initialMessages }: AppProps) {
   const [authChecked, setAuthChecked] = useState(Boolean(initialSettings && initialMessages));
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [streamState, setStreamState] = useState<"idle" | "connected" | "reconnecting">("idle");
+  const selectedChannelIdRef = useRef(selectedChannelId);
+  const lastEventIdRef = useRef(initialMessages?.latestEventId ?? null);
+  const hasMessageData = messageData !== null;
+
+  useEffect(() => {
+    selectedChannelIdRef.current = selectedChannelId;
+  }, [selectedChannelId]);
+
+  const refreshMessages = useCallback(async (channelId = selectedChannelIdRef.current) => {
+    const nextMessages = await fetchMessages(channelId || undefined);
+    lastEventIdRef.current = nextMessages.latestEventId;
+    setMessageData(nextMessages);
+    setError(null);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,10 +51,11 @@ export function App({ initialSettings, initialMessages }: AppProps) {
         }
         setUser(me.user);
         setAuthChecked(true);
-        const [nextSettings, nextMessages] = await Promise.all([fetchSettings(), fetchMessages(selectedChannelId || undefined)]);
+        const [nextSettings, nextMessages] = await Promise.all([fetchSettings(), fetchMessages(selectedChannelIdRef.current || undefined)]);
         if (cancelled) return;
         setSettings(nextSettings);
         setMessageData(nextMessages);
+        lastEventIdRef.current = nextMessages.latestEventId;
         setError(null);
       } catch (nextError) {
         if (!cancelled) {
@@ -50,9 +69,33 @@ export function App({ initialSettings, initialMessages }: AppProps) {
     return () => {
       cancelled = true;
     };
-  }, [initialMessages, initialSettings, selectedChannelId]);
+  }, [initialMessages, initialSettings]);
 
-  const emptyMessages = useMemo<MessageListResponse>(() => ({ messages: [], channels: [], total: 0 }), []);
+  useEffect(() => {
+    if (!authChecked || (!user && !initialSettings)) return;
+    void refreshMessages(selectedChannelId).catch((nextError) => {
+      setError(nextError instanceof Error ? nextError.message : "Failed to refresh messages");
+    });
+  }, [authChecked, initialSettings, refreshMessages, selectedChannelId, user]);
+
+  useEffect(() => {
+    if (!authChecked || !messageData || !hasMessageData || (!user && !initialSettings) || typeof EventSource === "undefined") return;
+    const source = subscribeMessageEvents(lastEventIdRef.current ?? messageData.latestEventId, (payload) => {
+      if (lastEventIdRef.current && !isNewerEventId(payload.eventId, lastEventIdRef.current)) return;
+      lastEventIdRef.current = payload.eventId;
+      void refreshMessages().catch((nextError) => {
+        setError(nextError instanceof Error ? nextError.message : "Failed to sync messages");
+      });
+    });
+    source.onopen = () => setStreamState("connected");
+    source.onerror = () => setStreamState("reconnecting");
+    return () => {
+      source.close();
+      setStreamState("idle");
+    };
+  }, [authChecked, hasMessageData, initialSettings, refreshMessages, user]);
+
+  const emptyMessages = useMemo<MessageListResponse>(() => ({ messages: [], channels: [], total: 0, latestEventId: null }), []);
   const loginError = useMemo(() => {
     if (typeof window === "undefined") return null;
     const params = new URLSearchParams(window.location.search);
@@ -67,10 +110,14 @@ export function App({ initialSettings, initialMessages }: AppProps) {
   if (!authChecked) {
     return (
       <main className="login-shell">
-        <section className="login-panel" aria-label="로딩">
-          <p className="eyebrow">Discord Ops</p>
-          <h1>암행 서소영</h1>
-        </section>
+        <Card padding={6} className="login-panel" aria-label="로딩">
+          <VStack gap={1}>
+            <Text type="supporting" weight="bold">
+              Discord Ops
+            </Text>
+            <Heading level={1}>암행 서소영</Heading>
+          </VStack>
+        </Card>
       </main>
     );
   }
@@ -85,9 +132,14 @@ export function App({ initialSettings, initialMessages }: AppProps) {
       messageData={messageData ?? emptyMessages}
       selectedChannelId={selectedChannelId}
       error={error}
+      streamState={streamState}
       user={user}
       onLogout={handleLogout}
       onSelectChannel={setSelectedChannelId}
     />
   );
+}
+
+function isNewerEventId(next: string, current: string): boolean {
+  return next > current;
 }

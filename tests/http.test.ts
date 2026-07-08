@@ -7,8 +7,10 @@ import {
   type SlackOAuthClient
 } from "../src/server/auth.js";
 import { loadConfig } from "../src/server/config.js";
-import { AppDatabase } from "../src/server/database.js";
+import { AppDatabase, buildDiscordDeeplink } from "../src/server/database.js";
 import { createAppServer } from "../src/server/http.js";
+import { MessageEventHub } from "../src/server/messageEvents.js";
+import type { DiscordMessageRecord } from "../src/shared/types.js";
 
 const servers: Array<{ close: () => void }> = [];
 const originalEnv = { ...process.env };
@@ -19,6 +21,10 @@ afterEach(() => {
 });
 
 async function startServer(slackClient: SlackOAuthClient = fakeSlackClient(), options: { bridge?: boolean; allowWorkspace?: boolean } = {}) {
+  return (await startServerContext(slackClient, options)).baseUrl;
+}
+
+async function startServerContext(slackClient: SlackOAuthClient = fakeSlackClient(), options: { bridge?: boolean; allowWorkspace?: boolean } = {}) {
   process.env.UNDERCOVER_DATABASE_PATH = ":memory:";
   process.env.DISCORD_MOCK_MODE = "true";
   process.env.UNDERCOVER_APP_BASE_URL = "https://undercover.eiaserinnys.me";
@@ -36,11 +42,12 @@ async function startServer(slackClient: SlackOAuthClient = fakeSlackClient(), op
   const config = loadConfig(process.cwd());
 
   const db = new AppDatabase(":memory:", true);
-  const server = createAppServer({ config, db, staticDir: "dist/client", auth: createAuthService(config, slackClient) });
+  const messageEvents = new MessageEventHub();
+  const server = createAppServer({ config, db, messageEvents, staticDir: "dist/client", auth: createAuthService(config, slackClient) });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   servers.push(server);
   const address = server.address() as AddressInfo;
-  return `http://127.0.0.1:${address.port}`;
+  return { baseUrl: `http://127.0.0.1:${address.port}`, db, messageEvents };
 }
 
 describe("HTTP API", () => {
@@ -62,11 +69,13 @@ describe("HTTP API", () => {
   it("keeps dashboard APIs behind Slack authentication", async () => {
     const baseUrl = await startServer();
     const messages = await fetch(`${baseUrl}/api/messages`);
+    const events = await fetch(`${baseUrl}/api/message-events`);
     const settings = await fetch(`${baseUrl}/api/settings`);
     const me = await fetch(`${baseUrl}/api/me`);
     const missing = await fetch(`${baseUrl}/api/send`);
 
     expect(messages.status).toBe(401);
+    expect(events.status).toBe(401);
     expect(settings.status).toBe(401);
     expect(me.status).toBe(401);
     expect(missing.status).toBe(401);
@@ -156,6 +165,25 @@ describe("HTTP API", () => {
     });
   });
 
+  it("streams message change events to authenticated dashboard clients", async () => {
+    const { baseUrl, db, messageEvents } = await startServerContext();
+    const authedCookie = await loginCookie(baseUrl);
+    const stream = await fetch(`${baseUrl}/api/message-events?lastEventId=9999-01-01T00%3A00%3A00.000Z%23z`, {
+      headers: { cookie: authedCookie }
+    });
+    expect(stream.status).toBe(200);
+    expect(stream.body).not.toBeNull();
+
+    const reader = stream.body!.getReader();
+    const change = db.upsertMessage(streamMessage());
+    messageEvents.publish(change);
+    const chunk = await readUntil(reader, "message-stream-1");
+    await reader.cancel();
+
+    expect(chunk).toContain("event: message");
+    expect(chunk).toContain("message-stream-1");
+  });
+
   it("rejects expired Corksheet handoff tokens", async () => {
     const baseUrl = await startServer(fakeSlackClient(), { bridge: true });
     const token = corksheetToken({
@@ -205,6 +233,56 @@ function fakeSlackClient(overrides: Partial<SlackIdentity> = {}): SlackOAuthClie
 
 function cookieHeader(setCookie: string): string {
   return setCookie.split(";")[0];
+}
+
+async function loginCookie(baseUrl: string): Promise<string> {
+  const start = await fetch(`${baseUrl}/auth/slack`, { redirect: "manual" });
+  const state = new URL(start.headers.get("location") ?? "").searchParams.get("state");
+  const stateCookie = start.headers.get("set-cookie") ?? "";
+  const callback = await fetch(`${baseUrl}/auth/slack/callback?state=${state}&code=code-1`, {
+    redirect: "manual",
+    headers: { cookie: cookieHeader(stateCookie) }
+  });
+  return cookieHeader(callback.headers.get("set-cookie") ?? "");
+}
+
+function streamMessage(): DiscordMessageRecord {
+  return {
+    guildId: "guild-1",
+    channelId: "channel-1",
+    channelName: "general",
+    parentChannelId: null,
+    threadId: null,
+    messageId: "message-stream-1",
+    authorId: "author-1",
+    authorName: "Lena",
+    authorAvatarUrl: null,
+    contentOriginal: "Please translate this.",
+    translationKo: null,
+    translationStatus: "pending",
+    translationError: null,
+    translatedAt: null,
+    deeplink: buildDiscordDeeplink("guild-1", "channel-1", null, "message-stream-1"),
+    status: "active",
+    detectedLanguage: null,
+    replyState: "unread",
+    createdAt: "2026-07-08T07:00:00.000Z",
+    editedAt: null,
+    deletedAt: null,
+    receivedAt: "2026-07-08T07:00:00.000Z"
+  };
+}
+
+async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, needle: string): Promise<string> {
+  const decoder = new TextDecoder();
+  let output = "";
+  for (let index = 0; index < 20; index += 1) {
+    const result = await reader.read();
+    if (result.done) break;
+    output += decoder.decode(result.value, { stream: true });
+    if (output.includes(needle)) return output;
+  }
+  return output;
 }
 
 function corksheetToken(input: { expiresAt: number; slackUserId: string; next: string; slackTeamId?: string | null }): string {

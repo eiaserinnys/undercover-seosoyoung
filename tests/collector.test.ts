@@ -12,6 +12,24 @@ const config: AppConfig = {
   discordMockMode: true,
   guildAllowlist: ["guild-1"],
   channelAllowlist: ["channel-1"],
+  authConfigErrors: [],
+  slack: {
+    clientId: null,
+    clientSecret: null,
+    redirectUri: "http://127.0.0.1:4318/auth/slack/callback",
+    teamId: null,
+    allowedUserIds: [],
+    allowWorkspace: false,
+    sessionSecret: null,
+    corksheetSsoStartUrl: null,
+    corksheetHandoffSecret: null,
+    sessionCookieName: "undercover_session",
+    stateCookieName: "undercover_oauth_state"
+  },
+  openAI: {
+    apiKey: null,
+    model: "gpt-5-mini"
+  },
   configErrors: []
 };
 
@@ -55,6 +73,7 @@ describe("Discord collector mapping", () => {
       messageId: "message-1",
       authorName: "Lena",
       contentOriginal: "hello discord",
+      translationStatus: "pending",
       status: "active",
       replyState: "unread"
     });

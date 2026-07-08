@@ -1,4 +1,4 @@
-import type { AppSettings, MeResponse, MessageListResponse } from "../shared/types.js";
+import type { AppSettings, MeResponse, MessageEventPayload, MessageListResponse } from "../shared/types.js";
 
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -22,6 +22,17 @@ export async function fetchMessages(channelId?: string): Promise<MessageListResp
   if (channelId) params.set("channelId", channelId);
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
   return getJson<MessageListResponse>(`/api/messages${suffix}`);
+}
+
+export function subscribeMessageEvents(lastEventId: string | null, onMessage: (payload: MessageEventPayload) => void): EventSource {
+  const params = new URLSearchParams();
+  if (lastEventId) params.set("lastEventId", lastEventId);
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  const source = new EventSource(`/api/message-events${suffix}`);
+  source.addEventListener("message", (event) => {
+    onMessage(JSON.parse(event.data) as MessageEventPayload);
+  });
+  return source;
 }
 
 export async function logout(): Promise<void> {

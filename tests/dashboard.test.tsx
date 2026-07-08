@@ -31,6 +31,7 @@ const settings: AppSettings = {
 
 const messageData: MessageListResponse = {
   total: 1,
+  latestEventId: "2026-07-07T07:00:00.000Z#message-1",
   channels: [{ channelId: "channel-1", channelName: "general", count: 1 }],
   messages: [
     {
@@ -44,7 +45,10 @@ const messageData: MessageListResponse = {
       authorName: "Lena",
       authorAvatarUrl: null,
       contentOriginal: "The warning is hard to read.",
-      translationKo: null,
+      translationKo: "경고가 읽기 어렵습니다.",
+      translationStatus: "translated",
+      translationError: null,
+      translatedAt: "2026-07-07T07:01:00.000Z",
       deeplink: "https://discord.com/channels/guild-1/channel-1/message-1",
       status: "active",
       detectedLanguage: "en",
@@ -65,6 +69,7 @@ describe("Dashboard smoke", () => {
         messageData={messageData}
         selectedChannelId=""
         error={null}
+        streamState="connected"
         onSelectChannel={() => {}}
       />
     );
@@ -72,6 +77,8 @@ describe("Dashboard smoke", () => {
     expect(html).toContain("읽기 전용");
     expect(html).toContain("Discord에 쓰지 않음");
     expect(html).toContain("The warning is hard to read.");
+    expect(html).toContain("경고가 읽기 어렵습니다.");
+    expect(html).toContain("실시간 연결");
     expect(html).toContain("Discord에서 열기");
     expect(html).not.toContain("답장");
     expect(html).not.toContain("전송");

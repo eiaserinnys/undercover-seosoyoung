@@ -2,6 +2,8 @@ export type DiscordMessageStatus = "active" | "edited" | "deleted";
 
 export type CollectorMode = "mock" | "live" | "configuration_error";
 
+export type TranslationStatus = "pending" | "translated" | "skipped";
+
 export interface DiscordMessageRecord {
   guildId: string;
   channelId: string;
@@ -14,6 +16,9 @@ export interface DiscordMessageRecord {
   authorAvatarUrl: string | null;
   contentOriginal: string;
   translationKo: string | null;
+  translationStatus: TranslationStatus;
+  translationError: string | null;
+  translatedAt: string | null;
   deeplink: string;
   status: DiscordMessageStatus;
   detectedLanguage: string | null;
@@ -28,6 +33,12 @@ export interface MessageListResponse {
   messages: DiscordMessageRecord[];
   channels: ChannelSummary[];
   total: number;
+  latestEventId: string | null;
+}
+
+export interface MessageEventPayload {
+  eventId: string;
+  message: DiscordMessageRecord;
 }
 
 export interface ChannelSummary {
