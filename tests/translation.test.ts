@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../src/server/config.js";
 import { AppDatabase, buildDiscordDeeplink } from "../src/server/database.js";
 import { MessageEventHub } from "../src/server/messageEvents.js";
-import { createTranslationService, type TranslationClient } from "../src/server/translation.js";
+import { OpenAITranslationClient, createTranslationService, type TranslationClient } from "../src/server/translation.js";
 import type { DiscordMessageRecord } from "../src/shared/types.js";
 
 function message(overrides: Partial<DiscordMessageRecord> = {}): DiscordMessageRecord {
@@ -58,6 +58,34 @@ describe("translation service", () => {
     expect(payloads).toContain("message-1");
     service.stop();
     db.close();
+  });
+
+  it("requests minimal reasoning effort and parses the Responses output text", async () => {
+    let sentBody: Record<string, unknown> | null = null;
+    const fakeFetch = (async (_url: string, init?: { body?: string }) => {
+      sentBody = JSON.parse(init?.body ?? "{}");
+      return {
+        ok: true,
+        async json() {
+          return {
+            output: [
+              { content: [{ text: '{"detectedLanguage":"en","translationKo":"안녕"}' }] }
+            ]
+          };
+        }
+      };
+    }) as unknown as typeof fetch;
+
+    const client = new OpenAITranslationClient("test-key", "gpt-5-mini", fakeFetch);
+    const result = await client.translateToKorean({ messageId: "m-1", content: "hi there" });
+
+    expect(result).toEqual({ detectedLanguage: "en", translationKo: "안녕" });
+    expect(sentBody).toMatchObject({
+      model: "gpt-5-mini",
+      reasoning: { effort: "minimal" },
+      max_output_tokens: 1024,
+      store: false
+    });
   });
 
   it("skips Korean messages without calling OpenAI", async () => {

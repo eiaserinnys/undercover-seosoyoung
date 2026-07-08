@@ -20,7 +20,7 @@ export interface TranslationService {
 
 type FetchLike = typeof fetch;
 
-const TRANSLATION_TIMEOUT_MS = 15_000;
+const TRANSLATION_TIMEOUT_MS = 30_000;
 const RETRY_DELAY_MS = 30_000;
 
 const TRANSLATION_INSTRUCTIONS = [
@@ -53,7 +53,13 @@ export class OpenAITranslationClient implements TranslationClient {
           model: this.model,
           instructions: TRANSLATION_INSTRUCTIONS,
           input: `Message ID: ${input.messageId}\n\n${input.content}`,
-          max_output_tokens: 512,
+          // gpt-5 models are reasoning models: reasoning tokens count against
+          // max_output_tokens. Without minimal effort, a longer message spends
+          // the whole budget on reasoning and returns status=incomplete with no
+          // output text (empty output_text), which the parser rejects. Minimal
+          // effort keeps translation fast (~1-2s) and deterministic.
+          reasoning: { effort: "minimal" },
+          max_output_tokens: 1024,
           store: false
         })
       });
