@@ -2,7 +2,7 @@ import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
-import { HStack, Layout, VStack } from "@astryxdesign/core/Layout";
+import { HStack, Layout, LayoutContent, LayoutPanel, VStack } from "@astryxdesign/core/Layout";
 import { Heading, Text } from "@astryxdesign/core/Text";
 import type { AppSettings, AuthenticatedUser, DiscordMessageRecord, MessageListResponse } from "../../shared/types.js";
 
@@ -31,8 +31,9 @@ export function Dashboard({
   return (
     <main className="dashboard-shell">
       <Layout
+        height="auto"
         start={
-          <aside className="sidebar" aria-label="대시보드 제어">
+          <LayoutPanel hasDivider width={300} role="complementary" aria-label="대시보드 제어" className="sidebar">
             <VStack gap={5}>
               <VStack gap={1}>
                 <Text type="supporting" weight="bold">
@@ -45,10 +46,10 @@ export function Dashboard({
               <ChannelFilters messageData={messageData} selectedChannelId={selectedChannelId} onSelectChannel={onSelectChannel} />
             </VStack>
             <SettingsPanel settings={settings} />
-          </aside>
+          </LayoutPanel>
         }
         content={
-          <section className="inbox" aria-label="Discord 메시지 인박스">
+          <LayoutContent role="main" aria-label="Discord 메시지 인박스" className="inbox">
             <VStack gap={4}>
               <HStack justify="between" align="center" gap={4} wrap="wrap">
                 <VStack gap={1}>
@@ -71,7 +72,7 @@ export function Dashboard({
                 {messageData.messages.length === 0 ? <EmptyInbox /> : null}
               </VStack>
             </VStack>
-          </section>
+          </LayoutContent>
         }
       />
     </main>
