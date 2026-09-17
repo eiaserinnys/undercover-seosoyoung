@@ -93,7 +93,7 @@ export class SlackWebApiClient implements SlackClient {
   }
 
   async getUploadUrl(filename: string, length: number): Promise<{ uploadUrl: string; fileId: string }> {
-    const body = await this.request("files.getUploadURLExternal", { filename, length }, false);
+    const body = await this.request("files.getUploadURLExternal", { filename, length }, false, "form");
     const uploadUrl = stringValue(body.upload_url);
     const fileId = stringValue(body.file_id);
     if (!uploadUrl || !fileId) {
@@ -146,7 +146,8 @@ export class SlackWebApiClient implements SlackClient {
   private async request(
     method: string,
     payload: Record<string, unknown>,
-    ambiguousOnTransportFailure: boolean
+    ambiguousOnTransportFailure: boolean,
+    encoding: "json" | "form" = "json"
   ): Promise<Record<string, unknown>> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -156,8 +157,13 @@ export class SlackWebApiClient implements SlackClient {
       try {
         response = await this.fetchImpl(`https://slack.com/api/${method}`, {
           method: "POST",
-          headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json; charset=utf-8" },
-          body: JSON.stringify(payload),
+          headers: {
+            authorization: `Bearer ${this.token}`,
+            "content-type": encoding === "form"
+              ? "application/x-www-form-urlencoded"
+              : "application/json; charset=utf-8"
+          },
+          body: encoding === "form" ? formEncode(payload) : JSON.stringify(payload),
           signal: controller.signal
         });
       } catch (error) {
@@ -495,4 +501,10 @@ function responseIdentity(body: Record<string, unknown>, fallbackChannel = "", f
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function formEncode(payload: Record<string, unknown>): string {
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(payload)) body.set(key, String(value));
+  return body.toString();
 }
