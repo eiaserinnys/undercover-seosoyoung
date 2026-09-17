@@ -130,9 +130,11 @@ describe("Slack relay payload and delivery", () => {
     await client.completeUploadExternal("C0C291S3YFM", "123.456", [{ id: ticket.fileId, title: "capture.png" }]);
     await client.deleteFile(ticket.fileId);
 
-    expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({ filename: "capture.png", length: 4 });
+    expect(new Headers(requests[0]?.init?.headers).get("content-type")).toBe("application/x-www-form-urlencoded");
+    expect(String(requests[0]?.init?.body)).toBe("filename=capture.png&length=4");
     expect(new Headers(requests[0]?.init?.headers).get("authorization")).toBe("Bearer xoxb-test");
     expect(new Headers(requests[1]?.init?.headers).get("authorization")).toBeNull();
+    expect(new Headers(requests[2]?.init?.headers).get("content-type")).toBe("application/json; charset=utf-8");
     expect(JSON.parse(String(requests[2]?.init?.body))).toEqual({
       channel_id: "C0C291S3YFM",
       thread_ts: "123.456",
