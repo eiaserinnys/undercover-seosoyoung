@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../src/server/config.js";
 import { AppDatabase, buildDiscordDeeplink } from "../src/server/database.js";
 import { MessageEventHub } from "../src/server/messageEvents.js";
-import { OpenAITranslationClient, createTranslationService, type TranslationClient } from "../src/server/translation.js";
+import { existsSync } from "node:fs";
+import {
+  CodexCliTranslationClient,
+  createTranslationService,
+  type CodexProcessRunner,
+  type ProcessRunRequest,
+  type TranslationClient
+} from "../src/server/translation.js";
 import type { DiscordMessageRecord } from "../src/shared/types.js";
 
 function message(overrides: Partial<DiscordMessageRecord> = {}): DiscordMessageRecord {
@@ -60,32 +67,74 @@ describe("translation service", () => {
     db.close();
   });
 
-  it("requests minimal reasoning effort and parses the Responses output text", async () => {
-    let sentBody: Record<string, unknown> | null = null;
-    const fakeFetch = (async (_url: string, init?: { body?: string }) => {
-      sentBody = JSON.parse(init?.body ?? "{}");
-      return {
-        ok: true,
-        async json() {
-          return {
-            output: [
-              { content: [{ text: '{"detectedLanguage":"en","translationKo":"안녕"}' }] }
-            ]
-          };
-        }
-      };
-    }) as unknown as typeof fetch;
+  it("runs an isolated Codex ephemeral turn through the configured binary and stdin", async () => {
+    let request: ProcessRunRequest | null = null;
+    let workingDirectory = "";
+    const runner: CodexProcessRunner = {
+      async run(next) {
+        request = next;
+        workingDirectory = next.cwd;
+        expect(existsSync(next.cwd)).toBe(true);
+        return {
+          exitCode: 0,
+          stdout: codexEvents("안녕"),
+          stderr: ""
+        };
+      },
+      async stop() {}
+    };
+    const client = new CodexCliTranslationClient("/configured/codex", "gpt-5.6-luna", runner);
 
-    const client = new OpenAITranslationClient("test-key", "gpt-5-mini", fakeFetch);
     const result = await client.translateToKorean({ messageId: "m-1", content: "hi there" });
 
-    expect(result).toEqual({ detectedLanguage: "en", translationKo: "안녕" });
-    expect(sentBody).toMatchObject({
-      model: "gpt-5-mini",
-      reasoning: { effort: "minimal" },
-      max_output_tokens: 1024,
-      store: false
-    });
+    expect(result).toEqual({ detectedLanguage: "und", translationKo: "안녕" });
+    expect(request).not.toBeNull();
+    expect(request!.command).toBe("/configured/codex");
+    expect(request!.args).toEqual([
+      "exec",
+      "--ephemeral",
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--skip-git-repo-check",
+      "--sandbox",
+      "read-only",
+      "--model",
+      "gpt-5.6-luna",
+      "-c",
+      'model_reasoning_effort="low"',
+      "--json",
+      "-C",
+      workingDirectory,
+      "-"
+    ]);
+    expect(request!.stdin).toContain("hi there");
+    expect(request!.args.join(" ")).not.toContain("hi there");
+    expect(request!.env.OPENAI_API_KEY).toBeUndefined();
+    expect(request!.env.SLACK_BOT_TOKEN).toBeUndefined();
+    expect(existsSync(workingDirectory)).toBe(false);
+  });
+
+  it.each([
+    ["turn.failed", '{"type":"turn.failed","error":{"message":"nope"}}'],
+    ["error", '{"type":"error","message":"nope"}'],
+    ["tool execution", '{"type":"item.completed","item":{"type":"command_execution","command":"pwd"}}']
+  ])("rejects %s even when an agent message was emitted", async (_label, forbiddenEvent) => {
+    const runner = fakeRunner([
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":"안녕"}}',
+      forbiddenEvent,
+      '{"type":"turn.completed"}'
+    ].join("\n"));
+    const client = new CodexCliTranslationClient("/configured/codex", "gpt-5.6-luna", runner);
+
+    await expect(client.translateToKorean({ messageId: "m-1", content: "hello" })).rejects.toThrow();
+  });
+
+  it("requires a completed turn and a non-empty final agent message", async () => {
+    const runner = fakeRunner('{"type":"item.completed","item":{"type":"agent_message","text":"안녕"}}');
+    const client = new CodexCliTranslationClient("/configured/codex", "gpt-5.6-luna", runner);
+
+    await expect(client.translateToKorean({ messageId: "m-1", content: "hello" })).rejects.toThrow("turn.completed");
   });
 
   it("skips Korean messages without calling OpenAI", async () => {
@@ -140,11 +189,37 @@ function config(): AppConfig {
       sessionCookieName: "undercover_session",
       stateCookieName: "undercover_oauth_state"
     },
-    openAI: {
-      apiKey: "test-key",
-      model: "gpt-5-mini"
+    translation: {
+      cliPath: "/configured/codex",
+      model: "gpt-5.6-luna",
+      configErrors: []
+    },
+    slackRelay: {
+      enabled: false,
+      channelId: null,
+      botUserId: null,
+      botToken: null,
+      configErrors: []
     },
     configErrors: []
+  };
+}
+
+function codexEvents(text: string): string {
+  return [
+    '{"type":"thread.started","thread_id":"thread-1"}',
+    '{"type":"turn.started"}',
+    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text } }),
+    '{"type":"turn.completed","usage":{}}'
+  ].join("\n");
+}
+
+function fakeRunner(stdout: string): CodexProcessRunner {
+  return {
+    async run() {
+      return { exitCode: 0, stdout, stderr: "" };
+    },
+    async stop() {}
   };
 }
 

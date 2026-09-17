@@ -43,8 +43,11 @@ pnpm dev
 - `DISCORD_MOCK_MODE`: `true`면 Gateway 연결 없이 seed 메시지 사용
 - `DISCORD_GUILD_ALLOWLIST`: 쉼표 구분 guild id
 - `DISCORD_CHANNEL_ALLOWLIST`: 쉼표 구분 channel id
-- `OPENAI_API_KEY`: live mode 번역에 필요한 OpenAI API key. `DISCORD_MOCK_MODE=false`일 때 필수
-- `OPENAI_TRANSLATE_MODEL`: 번역 모델. 기본 `gpt-5-mini`
+- `CODEX_CLI_PATH`: 번역에 사용할 Codex CLI 실행 파일의 절대 경로. 번역 모델은 `gpt-5.6-luna`로 고정
+- `UNDERCOVER_SLACK_RELAY_ENABLED`: `true`일 때만 Slack 중계 활성화
+- `UNDERCOVER_SLACK_RELAY_CHANNEL_ID`: 중계 대상 채널. 운영값 `C0C291S3YFM`
+- `UNDERCOVER_SLACK_RELAY_BOT_USER_ID`: `auth.test`로 일치 여부를 확인할 봇 ID. 운영값 `U0A8XJZ6Q5S`
+- `SLACK_BOT_TOKEN`: 중계 봇 토큰. 로그인 OAuth credential과 별개
 
 공개 URL(`https://undercover.eiaserinnys.me`)에서는 `UNDERCOVER_ALLOWED_SLACK_USER_IDS` 또는
 `UNDERCOVER_ALLOW_WORKSPACE=true` 중 하나가 반드시 명시되어야 합니다. workspace-wide 허용은
@@ -70,6 +73,8 @@ pnpm dev
 
 메시지 저장 시 `content_hash`를 함께 저장합니다. 원문이 바뀌지 않은 messageUpdate는 기존 번역을 보존하고, 원문이 바뀐 경우에만 `translation_status=pending`으로 되돌려 재번역합니다.
 
+신규·수정 이벤트의 번역은 격리된 Codex `exec --ephemeral` 프로세스가 담당합니다. 임시 작업 디렉터리, 읽기 전용 sandbox, 제한된 환경변수를 사용하며 source는 stdin으로만 전달합니다. 배포 시작 시 과거 `pending` 행을 일괄 재번역하지 않습니다. 번역 실패는 해당 행에 남겨 재시도하고 Discord 수집은 계속됩니다.
+
 기존 SQLite 파일은 앱 시작 시 다음 컬럼을 자동 추가합니다.
 
 - `content_hash`
@@ -78,6 +83,16 @@ pnpm dev
 - `translated_at`
 
 수동 DB migration 명령은 필요 없습니다.
+
+## Slack 중계
+
+릴레이를 처음 초기화할 때 이미 DB에 있던 message ID는 영구적으로 `baseline_excluded`가 되어 발송되지 않습니다. 그 뒤 처음 들어온 ID만 `링크 | 한국어 | 원문`의 헤더 없는 3열 table block으로 전송하며, 같은 ID의 수정과 삭제는 기존 Slack 메시지에 반영합니다. 상태와 Slack `ts`는 같은 SQLite 파일에 저장되어 중복 이벤트나 재시작이 중복 발송을 만들지 않습니다.
+
+운영 예외는 로그의 message ID와 `slack_relay_state`에 남습니다.
+
+- `unknown`: post 응답을 받지 못해 성공 여부가 불명확합니다. 자동 재전송하지 말고 대상 채널을 먼저 확인한 뒤 상태를 수동 조정합니다.
+- `too_long`: 원문을 자르지 않습니다. Discord 원문이 제한 아래로 수정되면 다시 처리됩니다.
+- `empty`: 빈 본문은 보내지 않습니다. 내용이 추가되면 다시 처리됩니다.
 
 ## Slack 로그인 운영 흐름
 
@@ -191,8 +206,12 @@ DISCORD_GUILD_ALLOWLIST=
 DISCORD_CHANNEL_ALLOWLIST=
 DISCORD_CLIENT_ID=
 
-OPENAI_API_KEY=
-OPENAI_TRANSLATE_MODEL=gpt-5-mini
+CODEX_CLI_PATH=
+
+UNDERCOVER_SLACK_RELAY_ENABLED=false
+UNDERCOVER_SLACK_RELAY_CHANNEL_ID=C0C291S3YFM
+UNDERCOVER_SLACK_RELAY_BOT_USER_ID=U0A8XJZ6Q5S
+SLACK_BOT_TOKEN=
 ```
 
 ## eiaserinnys 공개 준비

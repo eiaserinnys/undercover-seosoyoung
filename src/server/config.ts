@@ -15,7 +15,8 @@ export interface AppConfig {
   channelAllowlist: string[];
   authConfigErrors: string[];
   configErrors: string[];
-  openAI: OpenAITranslationConfig;
+  translation: TranslationConfig;
+  slackRelay: SlackRelayConfig;
 }
 
 export interface SlackAuthConfig {
@@ -32,15 +33,24 @@ export interface SlackAuthConfig {
   stateCookieName: string;
 }
 
-export interface OpenAITranslationConfig {
-  apiKey: string | null;
+export interface TranslationConfig {
+  cliPath: string | null;
   model: string;
+  configErrors: string[];
+}
+
+export interface SlackRelayConfig {
+  enabled: boolean;
+  channelId: string | null;
+  botUserId: string | null;
+  botToken: string | null;
+  configErrors: string[];
 }
 
 const REQUIRED_GATEWAY_INTENTS = ["Guilds", "GuildMessages", "MessageContent"];
 const REQUIRED_BOT_PERMISSIONS = ["View Channels", "Read Message History"];
 const DISALLOWED_BOT_PERMISSIONS = ["Send Messages", "Manage Messages", "Use Webhooks"];
-const DEFAULT_OPENAI_TRANSLATE_MODEL = "gpt-5-mini";
+const DEFAULT_TRANSLATION_MODEL = "gpt-5.6-luna";
 
 function loadDotEnvFile(path: string): void {
   if (!existsSync(path)) return;
@@ -104,11 +114,13 @@ export function loadConfig(rootDir = process.cwd()): AppConfig {
   const explicitMockMode = readBooleanEnv("DISCORD_MOCK_MODE");
   const discordMockMode = explicitMockMode ?? !discordToken;
   const discordConfigErrors = !discordMockMode && !discordToken ? ["DISCORD_BOT_TOKEN is required when DISCORD_MOCK_MODE=false"] : [];
-  const openAI = loadOpenAITranslationConfig();
-  const openAIConfigErrors = !discordMockMode && !openAI.apiKey ? ["OPENAI_API_KEY is required when DISCORD_MOCK_MODE=false"] : [];
+  const translation = loadTranslationConfig();
+  const slackRelay = loadSlackRelayConfig();
   const slack = loadSlackAuthConfig(appBaseUrl);
   const authConfigErrors = validateSlackAuthConfig(appBaseUrl, slack);
-  const configErrors = [...discordConfigErrors, ...openAIConfigErrors, ...authConfigErrors];
+  // Translation and relay are independent workers. A missing worker credential
+  // must not disable the read-only Discord collector or dashboard.
+  const configErrors = [...discordConfigErrors, ...authConfigErrors];
 
   return {
     port,
@@ -123,7 +135,8 @@ export function loadConfig(rootDir = process.cwd()): AppConfig {
     channelAllowlist: readCsvEnv("DISCORD_CHANNEL_ALLOWLIST"),
     authConfigErrors,
     configErrors,
-    openAI
+    translation,
+    slackRelay
   };
 }
 
@@ -175,11 +188,27 @@ function loadSlackAuthConfig(appBaseUrl: string): SlackAuthConfig {
   };
 }
 
-function loadOpenAITranslationConfig(): OpenAITranslationConfig {
+function loadTranslationConfig(): TranslationConfig {
+  const cliPath = readOptionalEnv("CODEX_CLI_PATH");
   return {
-    apiKey: readOptionalEnv("OPENAI_API_KEY"),
-    model: readOptionalEnv("OPENAI_TRANSLATE_MODEL") ?? DEFAULT_OPENAI_TRANSLATE_MODEL
+    cliPath,
+    model: DEFAULT_TRANSLATION_MODEL,
+    configErrors: cliPath ? [] : ["CODEX_CLI_PATH is required"]
   };
+}
+
+function loadSlackRelayConfig(): SlackRelayConfig {
+  const enabled = readBooleanEnv("UNDERCOVER_SLACK_RELAY_ENABLED") ?? false;
+  const channelId = readOptionalEnv("UNDERCOVER_SLACK_RELAY_CHANNEL_ID");
+  const botUserId = readOptionalEnv("UNDERCOVER_SLACK_RELAY_BOT_USER_ID");
+  const botToken = readOptionalEnv("SLACK_BOT_TOKEN");
+  const configErrors: string[] = [];
+  if (enabled) {
+    if (!channelId) configErrors.push("UNDERCOVER_SLACK_RELAY_CHANNEL_ID is required when relay is enabled");
+    if (!botUserId) configErrors.push("UNDERCOVER_SLACK_RELAY_BOT_USER_ID is required when relay is enabled");
+    if (!botToken) configErrors.push("SLACK_BOT_TOKEN is required when relay is enabled");
+  }
+  return { enabled, channelId, botUserId, botToken, configErrors };
 }
 
 function validateSlackAuthConfig(appBaseUrl: string, slack: SlackAuthConfig): string[] {

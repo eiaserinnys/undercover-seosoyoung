@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { AppDatabase, buildDiscordDeeplink } from "../src/server/database.js";
 import type { DiscordMessageRecord } from "../src/shared/types.js";
@@ -58,7 +58,7 @@ describe("AppDatabase", () => {
   it("preserves translation for metadata updates and clears it when source content changes", () => {
     const db = new AppDatabase(":memory:");
     db.upsertMessage(message());
-    db.saveTranslation("message-1", "안녕하세요", "en", "2026-07-07T07:01:00.000Z");
+    db.saveTranslation("message-1", "hello", "안녕하세요", "en", "2026-07-07T07:01:00.000Z");
 
     db.upsertMessage(
       message({
@@ -84,6 +84,22 @@ describe("AppDatabase", () => {
       translationKo: null,
       translationStatus: "pending",
       translatedAt: null
+    });
+    db.close();
+  });
+
+  it("rejects stale translation success and failure after source content changes", () => {
+    const db = new AppDatabase(":memory:");
+    db.upsertMessage(message({ contentOriginal: "first" }));
+    db.upsertMessage(message({ contentOriginal: "second", status: "edited" }));
+
+    expect(db.saveTranslation("message-1", "first", "오래된 번역", "en", "2026-07-07T07:01:00.000Z")).toBeNull();
+    expect(db.markTranslationPending("message-1", "first", "old failure", "2026-07-07T07:01:00.000Z")).toBeNull();
+    expect(db.getMessage("message-1")).toMatchObject({
+      contentOriginal: "second",
+      translationKo: null,
+      translationStatus: "pending",
+      translationError: null
     });
     db.close();
   });
@@ -116,6 +132,7 @@ describe("AppDatabase", () => {
 
 describe("AppDatabase migrations", () => {
   const created: string[] = [];
+  const fileTestTmpDir = existsSync("/dev/shm") ? "/dev/shm" : tmpdir();
 
   afterEach(() => {
     for (const path of created.splice(0)) {
@@ -124,7 +141,7 @@ describe("AppDatabase migrations", () => {
   });
 
   it("migrates a pre-translation table (old schema, no new columns) without throwing", () => {
-    const path = join(tmpdir(), `undercover-legacy-${randomUUID()}.sqlite`);
+    const path = join(fileTestTmpDir, `undercover-legacy-${randomUUID()}.sqlite`);
     created.push(path);
 
     // Recreate the pre-translation on-disk schema: no content_hash,
@@ -177,5 +194,5 @@ describe("AppDatabase migrations", () => {
       translationStatus: "pending"
     });
     db.close();
-  });
+  }, 15_000);
 });
