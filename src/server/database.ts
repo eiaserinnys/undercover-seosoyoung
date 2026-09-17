@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import type { ChannelSummary, DiscordMessageRecord, DiscordMessageStatus, TranslationStatus } from "../shared/types.js";
+import type {
+  ChannelSummary,
+  DiscordMessageRecord,
+  DiscordMessageStatus,
+  TranslationStatus
+} from "../shared/types.js";
 import { mockMessages } from "./mockData.js";
+import { parseDiscordAttachments, serializeDiscordAttachments } from "./discordAttachments.js";
 
 export interface MessageFilters {
   channelId?: string;
@@ -59,6 +65,7 @@ export class AppDatabase {
         author_name TEXT NOT NULL,
         author_avatar_url TEXT,
         content_original TEXT NOT NULL,
+        attachments_json TEXT NOT NULL DEFAULT '[]',
         content_hash TEXT NOT NULL DEFAULT '',
         translation_ko TEXT,
         translation_status TEXT NOT NULL DEFAULT 'pending',
@@ -82,6 +89,7 @@ export class AppDatabase {
       // Backfill new columns BEFORE indexing them. On a pre-existing table
       // `CREATE TABLE IF NOT EXISTS` is a no-op.
       this.addColumnIfMissing("discord_messages", "content_hash", "TEXT NOT NULL DEFAULT ''");
+      this.addColumnIfMissing("discord_messages", "attachments_json", "TEXT NOT NULL DEFAULT '[]'");
       this.addColumnIfMissing("discord_messages", "translation_status", "TEXT NOT NULL DEFAULT 'pending'");
       this.addColumnIfMissing("discord_messages", "translation_error", "TEXT");
       this.addColumnIfMissing("discord_messages", "translated_at", "TEXT");
@@ -144,6 +152,7 @@ export class AppDatabase {
       existing.authorId !== message.authorId ||
       existing.authorName !== message.authorName ||
       existing.authorAvatarUrl !== message.authorAvatarUrl ||
+      serializeDiscordAttachments(existing.attachments) !== serializeDiscordAttachments(message.attachments) ||
       existing.deeplink !== message.deeplink ||
       existing.status !== message.status ||
       existing.editedAt !== message.editedAt ||
@@ -155,10 +164,10 @@ export class AppDatabase {
         `
         INSERT INTO discord_messages (
           message_id, guild_id, channel_id, channel_name, parent_channel_id, thread_id,
-          author_id, author_name, author_avatar_url, content_original, content_hash, translation_ko,
+          author_id, author_name, author_avatar_url, content_original, attachments_json, content_hash, translation_ko,
           translation_status, translation_error, translated_at, deeplink, status, detected_language,
           reply_state, created_at, edited_at, deleted_at, received_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(message_id) DO UPDATE SET
           guild_id = excluded.guild_id,
           channel_id = excluded.channel_id,
@@ -169,6 +178,7 @@ export class AppDatabase {
           author_name = excluded.author_name,
           author_avatar_url = excluded.author_avatar_url,
           content_original = excluded.content_original,
+          attachments_json = excluded.attachments_json,
           content_hash = excluded.content_hash,
           translation_ko = CASE
             WHEN discord_messages.content_hash = excluded.content_hash THEN discord_messages.translation_ko
@@ -208,6 +218,7 @@ export class AppDatabase {
         message.authorName,
         message.authorAvatarUrl,
         message.contentOriginal,
+        serializeDiscordAttachments(message.attachments),
         contentHash,
         message.translationKo,
         translationStatus,
@@ -267,6 +278,7 @@ export class AppDatabase {
       authorName: "Unknown",
       authorAvatarUrl: null,
       contentOriginal: "",
+      attachments: [],
       translationKo: null,
       translationStatus: "skipped",
       translationError: null,
@@ -487,6 +499,7 @@ function mapMessageRow(row: Record<string, unknown>): DiscordMessageRecord {
     authorName: text(row.author_name),
     authorAvatarUrl: nullableText(row.author_avatar_url),
     contentOriginal: text(row.content_original),
+    attachments: parseDiscordAttachments(row.attachments_json),
     translationKo: nullableText(row.translation_ko),
     translationStatus: text(row.translation_status) as TranslationStatus,
     translationError: nullableText(row.translation_error),

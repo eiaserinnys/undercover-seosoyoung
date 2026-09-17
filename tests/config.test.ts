@@ -95,4 +95,12 @@ describe("configuration", () => {
     ]);
     expect(config.configErrors).not.toContain(config.slackRelay.configErrors[0]);
   });
+
+  it("uses a bounded default for Slack attachment relay and accepts an explicit override", () => {
+    delete process.env.UNDERCOVER_SLACK_RELAY_ATTACHMENT_MAX_BYTES;
+    expect(loadConfig(process.cwd()).slackRelay.attachmentMaxBytes).toBe(20 * 1024 * 1024);
+
+    process.env.UNDERCOVER_SLACK_RELAY_ATTACHMENT_MAX_BYTES = "1048576";
+    expect(loadConfig(process.cwd()).slackRelay.attachmentMaxBytes).toBe(1_048_576);
+  });
 });

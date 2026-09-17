@@ -4,6 +4,15 @@ export type CollectorMode = "mock" | "live" | "configuration_error";
 
 export type TranslationStatus = "pending" | "translated" | "skipped";
 
+export interface DiscordAttachmentRecord {
+  attachmentId: string;
+  filename: string;
+  contentType: string | null;
+  description: string | null;
+  sizeBytes: number;
+  sourceUrl: string;
+}
+
 export interface DiscordMessageRecord {
   guildId: string;
   channelId: string;
@@ -15,6 +24,7 @@ export interface DiscordMessageRecord {
   authorName: string;
   authorAvatarUrl: string | null;
   contentOriginal: string;
+  attachments: DiscordAttachmentRecord[];
   translationKo: string | null;
   translationStatus: TranslationStatus;
   translationError: string | null;

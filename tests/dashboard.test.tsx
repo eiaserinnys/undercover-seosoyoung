@@ -45,6 +45,7 @@ const messageData: MessageListResponse = {
       authorName: "Lena",
       authorAvatarUrl: null,
       contentOriginal: "The warning is hard to read.",
+      attachments: [],
       translationKo: "경고가 읽기 어렵습니다.",
       translationStatus: "translated",
       translationError: null,
