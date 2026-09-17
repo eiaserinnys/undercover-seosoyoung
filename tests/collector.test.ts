@@ -26,9 +26,17 @@ const config: AppConfig = {
     sessionCookieName: "undercover_session",
     stateCookieName: "undercover_oauth_state"
   },
-  openAI: {
-    apiKey: null,
-    model: "gpt-5-mini"
+  translation: {
+    cliPath: null,
+    model: "gpt-5.6-luna",
+    configErrors: ["CODEX_CLI_PATH is required"]
+  },
+  slackRelay: {
+    enabled: false,
+    channelId: null,
+    botUserId: null,
+    botToken: null,
+    configErrors: []
   },
   configErrors: []
 };

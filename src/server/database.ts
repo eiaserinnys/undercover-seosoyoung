@@ -45,8 +45,10 @@ export class AppDatabase {
   }
 
   private initialize(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS discord_messages (
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS discord_messages (
         message_id TEXT PRIMARY KEY,
         guild_id TEXT NOT NULL,
         channel_id TEXT NOT NULL,
@@ -72,22 +74,25 @@ export class AppDatabase {
         received_at TEXT NOT NULL
       );
 
-      CREATE INDEX IF NOT EXISTS idx_discord_messages_channel ON discord_messages(channel_id);
-      CREATE INDEX IF NOT EXISTS idx_discord_messages_status ON discord_messages(status);
-      CREATE INDEX IF NOT EXISTS idx_discord_messages_created_at ON discord_messages(created_at);
-      CREATE INDEX IF NOT EXISTS idx_discord_messages_received_at ON discord_messages(received_at);
-    `);
-    // Backfill new columns BEFORE indexing them. On a pre-existing table
-    // (old schema without these columns) `CREATE TABLE IF NOT EXISTS` is a
-    // no-op, so an index on a not-yet-added column would throw. Add the
-    // columns first, then create their indexes.
-    this.addColumnIfMissing("discord_messages", "content_hash", "TEXT NOT NULL DEFAULT ''");
-    this.addColumnIfMissing("discord_messages", "translation_status", "TEXT NOT NULL DEFAULT 'pending'");
-    this.addColumnIfMissing("discord_messages", "translation_error", "TEXT");
-    this.addColumnIfMissing("discord_messages", "translated_at", "TEXT");
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_discord_messages_translation_status ON discord_messages(translation_status);
-    `);
+        CREATE INDEX IF NOT EXISTS idx_discord_messages_channel ON discord_messages(channel_id);
+        CREATE INDEX IF NOT EXISTS idx_discord_messages_status ON discord_messages(status);
+        CREATE INDEX IF NOT EXISTS idx_discord_messages_created_at ON discord_messages(created_at);
+        CREATE INDEX IF NOT EXISTS idx_discord_messages_received_at ON discord_messages(received_at);
+      `);
+      // Backfill new columns BEFORE indexing them. On a pre-existing table
+      // `CREATE TABLE IF NOT EXISTS` is a no-op.
+      this.addColumnIfMissing("discord_messages", "content_hash", "TEXT NOT NULL DEFAULT ''");
+      this.addColumnIfMissing("discord_messages", "translation_status", "TEXT NOT NULL DEFAULT 'pending'");
+      this.addColumnIfMissing("discord_messages", "translation_error", "TEXT");
+      this.addColumnIfMissing("discord_messages", "translated_at", "TEXT");
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_discord_messages_translation_status ON discord_messages(translation_status);
+      `);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   private addColumnIfMissing(table: string, column: string, definition: string): void {
@@ -349,8 +354,13 @@ export class AppDatabase {
       .map((row) => text((row as Record<string, unknown>).message_id));
   }
 
-  markTranslationSkipped(messageId: string, detectedLanguage: string, translatedAt: string): MessageChangeResult | null {
-    this.db
+  markTranslationSkipped(
+    messageId: string,
+    expectedContent: string,
+    detectedLanguage: string,
+    translatedAt: string
+  ): MessageChangeResult | null {
+    const result = this.db
       .prepare(
         `
         UPDATE discord_messages
@@ -359,15 +369,22 @@ export class AppDatabase {
             translated_at = ?,
             detected_language = ?,
             received_at = ?
-        WHERE message_id = ?
+        WHERE message_id = ? AND content_hash = ? AND status != 'deleted'
       `
       )
-      .run(translatedAt, detectedLanguage, translatedAt, messageId);
+      .run(translatedAt, detectedLanguage, translatedAt, messageId, hashContent(expectedContent));
+    if (result.changes === 0) return null;
     return this.changeResultForMessage(messageId, false);
   }
 
-  saveTranslation(messageId: string, translationKo: string, detectedLanguage: string, translatedAt: string): MessageChangeResult | null {
-    this.db
+  saveTranslation(
+    messageId: string,
+    expectedContent: string,
+    translationKo: string,
+    detectedLanguage: string,
+    translatedAt: string
+  ): MessageChangeResult | null {
+    const result = this.db
       .prepare(
         `
         UPDATE discord_messages
@@ -377,25 +394,32 @@ export class AppDatabase {
             translated_at = ?,
             detected_language = ?,
             received_at = ?
-        WHERE message_id = ?
+        WHERE message_id = ? AND content_hash = ? AND status != 'deleted'
       `
       )
-      .run(translationKo, translatedAt, detectedLanguage, translatedAt, messageId);
+      .run(translationKo, translatedAt, detectedLanguage, translatedAt, messageId, hashContent(expectedContent));
+    if (result.changes === 0) return null;
     return this.changeResultForMessage(messageId, false);
   }
 
-  markTranslationPending(messageId: string, error: string, receivedAt: string): MessageChangeResult | null {
-    this.db
+  markTranslationPending(
+    messageId: string,
+    expectedContent: string,
+    error: string,
+    receivedAt: string
+  ): MessageChangeResult | null {
+    const result = this.db
       .prepare(
         `
         UPDATE discord_messages
         SET translation_status = 'pending',
             translation_error = ?,
             received_at = ?
-        WHERE message_id = ?
+        WHERE message_id = ? AND content_hash = ? AND status != 'deleted'
       `
       )
-      .run(error, receivedAt, messageId);
+      .run(error, receivedAt, messageId, hashContent(expectedContent));
+    if (result.changes === 0) return null;
     return this.changeResultForMessage(messageId, false);
   }
 

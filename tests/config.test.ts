@@ -70,4 +70,29 @@ describe("configuration", () => {
 
     expect(loadConfig(process.cwd()).configErrors).toEqual([]);
   });
+
+  it("requires an explicit Codex CLI path without blocking the Discord collector", () => {
+    delete process.env.CODEX_CLI_PATH;
+
+    const config = loadConfig(process.cwd());
+
+    expect(config.translation.configErrors).toContain("CODEX_CLI_PATH is required");
+    expect(config.configErrors).not.toContain("CODEX_CLI_PATH is required");
+  });
+
+  it("validates relay settings only when relay is enabled", () => {
+    process.env.UNDERCOVER_SLACK_RELAY_ENABLED = "true";
+    delete process.env.UNDERCOVER_SLACK_RELAY_CHANNEL_ID;
+    delete process.env.UNDERCOVER_SLACK_RELAY_BOT_USER_ID;
+    delete process.env.SLACK_BOT_TOKEN;
+
+    const config = loadConfig(process.cwd());
+
+    expect(config.slackRelay.configErrors).toEqual([
+      "UNDERCOVER_SLACK_RELAY_CHANNEL_ID is required when relay is enabled",
+      "UNDERCOVER_SLACK_RELAY_BOT_USER_ID is required when relay is enabled",
+      "SLACK_BOT_TOKEN is required when relay is enabled"
+    ]);
+    expect(config.configErrors).not.toContain(config.slackRelay.configErrors[0]);
+  });
 });
