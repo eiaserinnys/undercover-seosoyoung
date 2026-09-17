@@ -1,7 +1,7 @@
 import { Client, Events, GatewayIntentBits, Partials, type Message, type PartialMessage } from "discord.js";
 import type { AppConfig } from "./config.js";
 import { buildDiscordDeeplink, type AppDatabase } from "./database.js";
-import type { DiscordMessageRecord } from "../shared/types.js";
+import type { DiscordAttachmentRecord, DiscordMessageRecord } from "../shared/types.js";
 import type { MessageChangeResult } from "./database.js";
 
 export interface MessageCollector {
@@ -28,9 +28,19 @@ export interface DiscordMessageLike {
     displayAvatarURL?: () => string;
   } | null;
   content?: string | null;
+  attachments?: { values(): IterableIterator<DiscordAttachmentLike> } | readonly DiscordAttachmentLike[];
   createdAt?: Date;
   editedAt?: Date | null;
   partial?: boolean;
+}
+
+export interface DiscordAttachmentLike {
+  id: string;
+  name?: string | null;
+  contentType?: string | null;
+  description?: string | null;
+  size?: number;
+  url?: string;
 }
 
 export interface CollectorCallbacks {
@@ -80,11 +90,23 @@ export class DiscordGatewayCollector implements MessageCollector {
       this.persistMessage(message, "active");
     });
     this.client.on(Events.MessageUpdate, (_oldMessage, newMessage) => {
-      this.persistMessage(newMessage, "edited");
+      void this.persistUpdatedMessage(newMessage);
     });
     this.client.on(Events.MessageDelete, (message) => {
       this.persistDelete(message);
     });
+  }
+
+  private async persistUpdatedMessage(message: Message | PartialMessage): Promise<void> {
+    try {
+      const resolved = message.partial ? await message.fetch() : message;
+      this.persistMessage(resolved, "edited");
+    } catch (error) {
+      console.error("Discord message update could not be hydrated; keeping the stored message unchanged", {
+        messageId: message.id,
+        error: error instanceof Error ? error.message : error
+      });
+    }
   }
 
   private persistMessage(message: Message | PartialMessage, status: "active" | "edited"): void {
@@ -123,6 +145,7 @@ export function mapDiscordMessage(
   status: "active" | "edited",
   config: Pick<AppConfig, "guildAllowlist" | "channelAllowlist">
 ): DiscordMessageRecord | null {
+  if (message.partial) return null;
   if (!isAllowedDiscordMessage(message, config)) return null;
   if (!message.guildId) return null;
   const channelIsThread = Boolean(message.channel?.isThread?.());
@@ -142,6 +165,7 @@ export function mapDiscordMessage(
     authorName: message.author?.globalName ?? message.author?.username ?? "Unknown",
     authorAvatarUrl: message.author?.displayAvatarURL?.() ?? null,
     contentOriginal: message.content ?? "",
+    attachments: mapDiscordAttachments(message.attachments),
     translationKo: null,
     translationStatus: message.content ? "pending" : "skipped",
     translationError: null,
@@ -155,6 +179,24 @@ export function mapDiscordMessage(
     deletedAt: null,
     receivedAt: now
   };
+}
+
+function mapDiscordAttachments(
+  attachments: DiscordMessageLike["attachments"]
+): DiscordAttachmentRecord[] {
+  if (!attachments) return [];
+  const values = Array.isArray(attachments) ? attachments : [...attachments.values()];
+  return values
+    .filter((attachment): attachment is DiscordAttachmentLike & { url: string } => Boolean(attachment.id && attachment.url))
+    .map((attachment) => ({
+      attachmentId: attachment.id,
+      filename: attachment.name?.trim() || `attachment-${attachment.id}`,
+      contentType: attachment.contentType?.trim() || null,
+      description: attachment.description?.trim() || null,
+      sizeBytes: Number.isSafeInteger(attachment.size) && Number(attachment.size) >= 0 ? Number(attachment.size) : 0,
+      sourceUrl: attachment.url
+    }))
+    .sort((left, right) => left.attachmentId.localeCompare(right.attachmentId));
 }
 
 export function extractDeleteIdentity(

@@ -44,6 +44,7 @@ export interface SlackRelayConfig {
   channelId: string | null;
   botUserId: string | null;
   botToken: string | null;
+  attachmentMaxBytes: number;
   configErrors: string[];
 }
 
@@ -51,6 +52,7 @@ const REQUIRED_GATEWAY_INTENTS = ["Guilds", "GuildMessages", "MessageContent"];
 const REQUIRED_BOT_PERMISSIONS = ["View Channels", "Read Message History"];
 const DISALLOWED_BOT_PERMISSIONS = ["Send Messages", "Manage Messages", "Use Webhooks"];
 const DEFAULT_TRANSLATION_MODEL = "gpt-5.6-luna";
+const DEFAULT_SLACK_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 
 function loadDotEnvFile(path: string): void {
   if (!existsSync(path)) return;
@@ -202,13 +204,17 @@ function loadSlackRelayConfig(): SlackRelayConfig {
   const channelId = readOptionalEnv("UNDERCOVER_SLACK_RELAY_CHANNEL_ID");
   const botUserId = readOptionalEnv("UNDERCOVER_SLACK_RELAY_BOT_USER_ID");
   const botToken = readOptionalEnv("SLACK_BOT_TOKEN");
+  const attachmentMaxBytes = readPositiveIntEnv(
+    "UNDERCOVER_SLACK_RELAY_ATTACHMENT_MAX_BYTES",
+    DEFAULT_SLACK_ATTACHMENT_MAX_BYTES
+  );
   const configErrors: string[] = [];
   if (enabled) {
     if (!channelId) configErrors.push("UNDERCOVER_SLACK_RELAY_CHANNEL_ID is required when relay is enabled");
     if (!botUserId) configErrors.push("UNDERCOVER_SLACK_RELAY_BOT_USER_ID is required when relay is enabled");
     if (!botToken) configErrors.push("SLACK_BOT_TOKEN is required when relay is enabled");
   }
-  return { enabled, channelId, botUserId, botToken, configErrors };
+  return { enabled, channelId, botUserId, botToken, attachmentMaxBytes, configErrors };
 }
 
 function validateSlackAuthConfig(appBaseUrl: string, slack: SlackAuthConfig): string[] {

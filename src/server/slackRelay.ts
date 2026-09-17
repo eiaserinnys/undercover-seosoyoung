@@ -1,15 +1,16 @@
-import type { DiscordMessageRecord } from "../shared/types.js";
+import type { DiscordAttachmentRecord, DiscordMessageRecord } from "../shared/types.js";
+import { DiscordCdnAttachmentDownloader, type AttachmentDownloader } from "./discordAttachmentDownloader.js";
 import type { SlackRelayJob } from "./slackRelayStore.js";
 import { SlackRelayStore } from "./slackRelayStore.js";
 
-export interface SlackTablePayload {
+export type SlackRichTextElement =
+  | { type: "link"; url: string; text: string; style?: { bold?: boolean } }
+  | { type: "text"; text: string; style?: { bold?: boolean } };
+
+export interface SlackMessagePayload {
   blocks: Array<{
-    type: "table";
-    column_settings: Array<{ is_wrapped: boolean }>;
-    rows: Array<Array<
-      | { type: "raw_text"; text: string }
-      | { type: "rich_text"; elements: Array<{ type: "rich_text_section"; elements: Array<{ type: "link"; url: string; text: string }> }> }
-    >>;
+    type: "rich_text";
+    elements: Array<{ type: "rich_text_section"; elements: SlackRichTextElement[] }>;
   }>;
   unfurl_links: false;
   unfurl_media: false;
@@ -17,14 +18,23 @@ export interface SlackTablePayload {
 
 export interface SlackClient {
   authTest(): Promise<{ userId: string }>;
-  postMessage(channel: string, payload: SlackTablePayload): Promise<{ channel: string; ts: string }>;
-  updateMessage(channel: string, ts: string, payload: SlackTablePayload): Promise<{ channel: string; ts: string }>;
+  postMessage(channel: string, payload: SlackMessagePayload): Promise<{ channel: string; ts: string }>;
+  updateMessage(channel: string, ts: string, payload: SlackMessagePayload): Promise<{ channel: string; ts: string }>;
   deleteMessage(channel: string, ts: string): Promise<{ channel: string; ts: string }>;
+  getUploadUrl(filename: string, length: number): Promise<{ uploadUrl: string; fileId: string }>;
+  uploadBytes(uploadUrl: string, bytes: Uint8Array): Promise<void>;
+  completeUploadExternal(
+    channel: string,
+    threadTs: string,
+    files: Array<{ id: string; title: string }>
+  ): Promise<void>;
+  deleteFile(fileId: string): Promise<void>;
 }
 
 export interface SlackRelayServiceConfig {
   channelId: string;
   botUserId: string;
+  attachmentMaxBytes: number;
   minWriteIntervalMs?: number;
 }
 
@@ -63,7 +73,7 @@ export class SlackWebApiClient implements SlackClient {
     return { userId };
   }
 
-  async postMessage(channel: string, payload: SlackTablePayload): Promise<{ channel: string; ts: string }> {
+  async postMessage(channel: string, payload: SlackMessagePayload): Promise<{ channel: string; ts: string }> {
     const body = await this.request("chat.postMessage", { channel, ...payload }, true);
     try {
       return responseIdentity(body);
@@ -72,7 +82,7 @@ export class SlackWebApiClient implements SlackClient {
     }
   }
 
-  async updateMessage(channel: string, ts: string, payload: SlackTablePayload): Promise<{ channel: string; ts: string }> {
+  async updateMessage(channel: string, ts: string, payload: SlackMessagePayload): Promise<{ channel: string; ts: string }> {
     const body = await this.request("chat.update", { channel, ts, ...payload }, false);
     return responseIdentity(body);
   }
@@ -80,6 +90,57 @@ export class SlackWebApiClient implements SlackClient {
   async deleteMessage(channel: string, ts: string): Promise<{ channel: string; ts: string }> {
     const body = await this.request("chat.delete", { channel, ts }, false);
     return responseIdentity(body, channel, ts);
+  }
+
+  async getUploadUrl(filename: string, length: number): Promise<{ uploadUrl: string; fileId: string }> {
+    const body = await this.request("files.getUploadURLExternal", { filename, length }, false);
+    const uploadUrl = stringValue(body.upload_url);
+    const fileId = stringValue(body.file_id);
+    if (!uploadUrl || !fileId) {
+      throw new SlackApiError("Slack upload ticket did not include upload_url and file_id", "invalid_response");
+    }
+    return { uploadUrl, fileId };
+  }
+
+  async uploadBytes(uploadUrl: string, bytes: Uint8Array): Promise<void> {
+    const url = new URL(uploadUrl);
+    if (url.protocol !== "https:" || url.hostname !== "files.slack.com" || url.port || !url.pathname.startsWith("/upload/")) {
+      throw new SlackApiError("Slack returned an invalid external upload URL", "invalid_upload_url");
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    timer.unref?.();
+    try {
+      let response: Response;
+      try {
+        response = await this.fetchImpl(url, {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream" },
+          body: Buffer.from(bytes),
+          redirect: "error",
+          signal: controller.signal
+        });
+      } catch (error) {
+        throw new Error(error instanceof Error ? error.message : "Slack file byte upload failed");
+      }
+      if (!response.ok) {
+        throw new SlackApiError(`Slack file byte upload returned HTTP ${response.status}`, `upload_http_${response.status}`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async completeUploadExternal(
+    channel: string,
+    threadTs: string,
+    files: Array<{ id: string; title: string }>
+  ): Promise<void> {
+    await this.request("files.completeUploadExternal", { channel_id: channel, thread_ts: threadTs, files }, true);
+  }
+
+  async deleteFile(fileId: string): Promise<void> {
+    await this.request("files.delete", { file: fileId }, false);
   }
 
   private async request(
@@ -113,7 +174,15 @@ export class SlackWebApiClient implements SlackClient {
         throw new AmbiguousSlackError(`Slack ${method} returned HTTP ${response.status}`);
       }
       if (!response.ok) throw new SlackApiError(`Slack ${method} returned HTTP ${response.status}`, `http_${response.status}`);
-      const body = await response.json() as Record<string, unknown>;
+      let body: Record<string, unknown>;
+      try {
+        body = await response.json() as Record<string, unknown>;
+      } catch (error) {
+        if (ambiguousOnTransportFailure) {
+          throw new AmbiguousSlackError(error instanceof Error ? error.message : "Slack response was invalid");
+        }
+        throw new SlackApiError("Slack response was not valid JSON", "invalid_json_response");
+      }
       if (body.ok !== true) {
         const code = stringValue(body.error) || "unknown_error";
         throw new SlackApiError(`Slack ${method} failed: ${code}`, code);
@@ -137,7 +206,8 @@ export class SlackRelayService {
   constructor(
     private readonly store: SlackRelayStore,
     private readonly client: SlackClient,
-    private readonly config: SlackRelayServiceConfig
+    private readonly config: SlackRelayServiceConfig,
+    private readonly attachmentDownloader: AttachmentDownloader = new DiscordCdnAttachmentDownloader()
   ) {}
 
   initialize(): void {
@@ -198,22 +268,38 @@ export class SlackRelayService {
 
   private async deliver(job: SlackRelayJob): Promise<void> {
     let postReturned = false;
+    const expectedRevision = job.attemptedRevision ?? job.observedRevision;
     try {
       let response: { channel: string; ts: string };
       if (job.pendingAction === "delete") {
         if (!job.slackTs) throw new Error("Cannot delete Slack message without a timestamp");
+        for (const file of this.store.slackFilesForDelete(job.messageId)) {
+          await this.waitForWriteSlot();
+          try {
+            await this.client.deleteFile(file.slackFileId);
+          } catch (error) {
+            if (!(error instanceof SlackApiError && ["file_not_found", "file_deleted"].includes(error.code))) throw error;
+          }
+          this.store.markAttachmentDeleted(job.messageId, file.attachmentId, file.slackFileId);
+        }
         await this.waitForWriteSlot();
         response = await this.client.deleteMessage(this.config.channelId, job.slackTs);
         validateSlackIdentity(response, this.config.channelId);
-        this.store.markDelivered(job.messageId, null);
+        this.store.markDelivered(job.messageId, null, expectedRevision, job.pendingAction);
         return;
       }
 
-      const payload = buildSlackTablePayload(job.message);
-      const characterCount = relayCharacterCount(job.message);
+      if (job.pendingAction === "media") {
+        await this.deliverMedia(job);
+        return;
+      }
+
+      const fallbackAttachments = this.store.fallbackAttachments(job.messageId);
+      const payload = buildSlackMessagePayload(job.message, fallbackAttachments);
+      const characterCount = relayCharacterCount(job.message, fallbackAttachments);
       if (characterCount > 10_000) {
-        const error = `Slack table content is ${characterCount} characters (limit 10000)`;
-        this.store.markTooLong(job.messageId, error);
+        const error = `Slack rich-text content is ${characterCount} characters (limit 10000)`;
+        this.store.markTooLong(job.messageId, error, expectedRevision, job.pendingAction);
         console.error("Slack relay message requires operator review", { messageId: job.messageId, status: "too_long", error });
         return;
       }
@@ -226,11 +312,11 @@ export class SlackRelayService {
         response = await this.client.updateMessage(this.config.channelId, job.slackTs, payload);
       }
       validateSlackIdentity(response, this.config.channelId);
-      this.store.markDelivered(job.messageId, response.ts);
+      this.store.markParentWritten(job.messageId, response.ts, expectedRevision, job.pendingAction);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Slack relay failed";
       if ((error instanceof AmbiguousSlackError || postReturned) && job.pendingAction === "post") {
-        this.store.markUnknown(job.messageId, message);
+        this.store.markUnknown(job.messageId, message, expectedRevision, job.pendingAction);
         console.error("Slack relay post result is unknown; automatic retry is paused", {
           messageId: job.messageId,
           status: "unknown",
@@ -239,14 +325,14 @@ export class SlackRelayService {
         return;
       }
       if (job.pendingAction === "delete" && error instanceof SlackApiError && error.code === "message_not_found") {
-        this.store.markDelivered(job.messageId, null);
+        this.store.markDelivered(job.messageId, null, expectedRevision, job.pendingAction);
         return;
       }
       const retryMs = error instanceof SlackRateLimitError
         ? error.retryAfterMs
         : Math.min(300_000, 1_000 * 2 ** Math.min(job.attemptCount, 8));
       const nextAttemptAt = new Date(Date.now() + retryMs).toISOString();
-      this.store.markRetry(job.messageId, message, nextAttemptAt);
+      this.store.markRetry(job.messageId, message, nextAttemptAt, expectedRevision, job.pendingAction);
       console.error("Slack relay write failed and will be retried", {
         messageId: job.messageId,
         action: job.pendingAction,
@@ -254,6 +340,69 @@ export class SlackRelayService {
         error: message
       });
     }
+  }
+
+  private async deliverMedia(job: SlackRelayJob): Promise<void> {
+    if (!job.slackTs) throw new Error("Cannot attach Slack files without a parent message timestamp");
+    const attachments = this.store.claimPendingAttachments(job.messageId);
+    if (attachments.length > 0) {
+      const processingIds = attachments.map((attachment) => attachment.attachmentId);
+      try {
+        const prepared: Array<{ attachmentId: string; fileId: string; title: string }> = [];
+        for (const attachment of attachments) {
+          const bytes = await this.attachmentDownloader.download(attachment, this.config.attachmentMaxBytes);
+          await this.waitForWriteSlot();
+          const ticket = await this.client.getUploadUrl(safeSlackFilename(attachment), bytes.byteLength);
+          this.store.markAttachmentPrepared(job.messageId, attachment.attachmentId, ticket.fileId);
+          await this.client.uploadBytes(ticket.uploadUrl, bytes);
+          prepared.push({
+            attachmentId: attachment.attachmentId,
+            fileId: ticket.fileId,
+            title: safeSlackFilename(attachment)
+          });
+        }
+        await this.waitForWriteSlot();
+        await this.client.completeUploadExternal(
+          this.config.channelId,
+          job.slackTs,
+          prepared.map((file) => ({ id: file.fileId, title: file.title }))
+        );
+        this.store.markAttachmentsUploaded(
+          job.messageId,
+          prepared.map((file) => ({ attachmentId: file.attachmentId, slackFileId: file.fileId }))
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Slack attachment upload failed";
+        this.store.markAttachmentsFailed(
+          job.messageId,
+          processingIds,
+          message,
+          error instanceof AmbiguousSlackError ? "unknown" : "failed"
+        );
+        console.error("Slack attachment upload failed; using Discord attachment links", {
+          messageId: job.messageId,
+          attachmentCount: processingIds.length,
+          error: message
+        });
+      }
+    }
+
+    const fallbackAttachments = this.store.fallbackAttachments(job.messageId);
+    if (fallbackAttachments.length > 0) {
+      await this.waitForWriteSlot();
+      const response = await this.client.updateMessage(
+        this.config.channelId,
+        job.slackTs,
+        buildSlackMessagePayload(job.message, fallbackAttachments)
+      );
+      validateSlackIdentity(response, this.config.channelId);
+    }
+    this.store.markDelivered(
+      job.messageId,
+      job.slackTs,
+      job.attemptedRevision ?? job.observedRevision,
+      job.pendingAction
+    );
   }
 
   private scheduleNextDurableRetry(): void {
@@ -285,31 +434,49 @@ export class SlackRelayService {
   }
 }
 
-export function buildSlackTablePayload(message: DiscordMessageRecord): SlackTablePayload {
+export function buildSlackMessagePayload(
+  message: DiscordMessageRecord,
+  fallbackAttachments: DiscordAttachmentRecord[] = []
+): SlackMessagePayload {
   const korean = message.translationKo ?? message.contentOriginal;
+  const elements: SlackRichTextElement[] = [
+    {
+      type: "link",
+      url: message.deeplink,
+      text: `🔗 ${message.authorName}`,
+      style: { bold: true }
+    },
+    {
+      type: "text",
+      text: ` | ${message.channelName ?? message.channelId}`,
+      style: { bold: true }
+    },
+    { type: "text", text: `\n\n${korean}` }
+  ];
+  for (const attachment of fallbackAttachments) {
+    elements.push(
+      { type: "text", text: "\n\n첨부 원본: " },
+      { type: "link", url: attachment.sourceUrl, text: attachment.filename }
+    );
+  }
   return {
     blocks: [{
-      type: "table",
-      column_settings: [{ is_wrapped: false }, { is_wrapped: true }, { is_wrapped: true }],
-      rows: [[
-        {
-          type: "rich_text",
-          elements: [{
-            type: "rich_text_section",
-            elements: [{ type: "link", url: message.deeplink, text: `🔗 ${message.authorName}` }]
-          }]
-        },
-        { type: "raw_text", text: korean },
-        { type: "raw_text", text: message.contentOriginal }
-      ]]
+      type: "rich_text",
+      elements: [{ type: "rich_text_section", elements }]
     }],
     unfurl_links: false,
     unfurl_media: false
   };
 }
 
-function relayCharacterCount(message: DiscordMessageRecord): number {
-  return [...`🔗 ${message.authorName}${message.translationKo ?? message.contentOriginal}${message.contentOriginal}`].length;
+function relayCharacterCount(message: DiscordMessageRecord, fallbackAttachments: DiscordAttachmentRecord[]): number {
+  const fallback = fallbackAttachments.map((attachment) => `첨부 원본: ${attachment.filename}`).join("");
+  return [...`🔗 ${message.authorName} | ${message.channelName ?? message.channelId}${message.translationKo ?? message.contentOriginal}${fallback}`].length;
+}
+
+function safeSlackFilename(attachment: DiscordAttachmentRecord): string {
+  const basename = attachment.filename.split(/[\\/]/).at(-1)?.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  return (basename || `attachment-${attachment.attachmentId}`).slice(0, 255);
 }
 
 function validateSlackIdentity(response: { channel: string; ts: string }, expectedChannel: string): void {

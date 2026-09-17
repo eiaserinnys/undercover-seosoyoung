@@ -24,6 +24,7 @@ function message(overrides: Partial<DiscordMessageRecord> = {}): DiscordMessageR
     authorName: "Lena",
     authorAvatarUrl: null,
     contentOriginal: "The warning is hard to read.",
+    attachments: [],
     translationKo: null,
     translationStatus: "pending",
     translationError: null,
@@ -199,6 +200,7 @@ function config(): AppConfig {
       channelId: null,
       botUserId: null,
       botToken: null,
+      attachmentMaxBytes: 20 * 1024 * 1024,
       configErrors: []
     },
     configErrors: []

@@ -19,6 +19,7 @@ function message(overrides: Partial<DiscordMessageRecord> = {}): DiscordMessageR
     authorName: "Lena",
     authorAvatarUrl: null,
     contentOriginal: "hello",
+    attachments: [],
     translationKo: null,
     translationStatus: "pending",
     translationError: null,
@@ -84,6 +85,31 @@ describe("AppDatabase", () => {
       translationKo: null,
       translationStatus: "pending",
       translatedAt: null
+    });
+    db.close();
+  });
+
+  it("stores attachment metadata without invalidating the text translation", () => {
+    const db = new AppDatabase(":memory:");
+    db.upsertMessage(message());
+    db.saveTranslation("message-1", "hello", "안녕하세요", "en", "2026-07-07T07:01:00.000Z");
+
+    const changed = db.upsertMessage(message({
+      attachments: [{
+        attachmentId: "123456789012345678",
+        filename: "capture.png",
+        contentType: "image/png",
+        description: null,
+        sizeBytes: 4,
+        sourceUrl: "https://cdn.discordapp.com/attachments/111111111111111111/123456789012345678/capture.png?ex=1&is=2&hm=3"
+      }]
+    }));
+
+    expect(changed).toMatchObject({ changed: true, contentChanged: false });
+    expect(db.getMessage("message-1")).toMatchObject({
+      translationKo: "안녕하세요",
+      translationStatus: "translated",
+      attachments: [{ filename: "capture.png", sizeBytes: 4 }]
     });
     db.close();
   });
@@ -191,6 +217,7 @@ describe("AppDatabase migrations", () => {
     expect(db.messageCount()).toBe(1);
     expect(db.getMessage("legacy-1")).toMatchObject({
       contentOriginal: "hello world",
+      attachments: [],
       translationStatus: "pending"
     });
     db.close();

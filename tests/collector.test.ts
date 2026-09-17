@@ -36,6 +36,7 @@ const config: AppConfig = {
     channelId: null,
     botUserId: null,
     botToken: null,
+    attachmentMaxBytes: 20 * 1024 * 1024,
     configErrors: []
   },
   configErrors: []
@@ -109,6 +110,45 @@ describe("Discord collector mapping", () => {
       threadId: "thread-1",
       deeplink: "https://discord.com/channels/guild-1/thread-1/message-1"
     });
+  });
+
+  it("persists Discord attachment metadata for media-only messages", () => {
+    const record = mapDiscordMessage(
+      fakeMessage({
+        content: "",
+        attachments: [{
+          id: "123456789012345678",
+          name: "capture.png",
+          contentType: "image/png",
+          description: "combat capture",
+          size: 4,
+          url: "https://cdn.discordapp.com/attachments/111111111111111111/123456789012345678/capture.png?ex=1&is=2&hm=3"
+        }]
+      }),
+      "active",
+      config
+    );
+
+    expect(record).toMatchObject({
+      contentOriginal: "",
+      translationStatus: "skipped",
+      attachments: [{
+        attachmentId: "123456789012345678",
+        filename: "capture.png",
+        contentType: "image/png",
+        sizeBytes: 4
+      }]
+    });
+  });
+
+  it("does not normalize an unhydrated partial update into empty content and attachments", () => {
+    const record = mapDiscordMessage(
+      fakeMessage({ partial: true, content: null, attachments: undefined }),
+      "edited",
+      config
+    );
+
+    expect(record).toBeNull();
   });
 
   it("extracts delete identities without needing original content", () => {

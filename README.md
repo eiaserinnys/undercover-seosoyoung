@@ -47,6 +47,7 @@ pnpm dev
 - `UNDERCOVER_SLACK_RELAY_ENABLED`: `true`일 때만 Slack 중계 활성화
 - `UNDERCOVER_SLACK_RELAY_CHANNEL_ID`: 중계 대상 채널. 운영값 `C0C291S3YFM`
 - `UNDERCOVER_SLACK_RELAY_BOT_USER_ID`: `auth.test`로 일치 여부를 확인할 봇 ID. 운영값 `U0A8XJZ6Q5S`
+- `UNDERCOVER_SLACK_RELAY_ATTACHMENT_MAX_BYTES`: Discord 첨부를 Slack으로 옮길 때의 파일당 상한. 기본 `20971520`(20 MiB)
 - `SLACK_BOT_TOKEN`: 중계 봇 토큰. 로그인 OAuth credential과 별개
 
 공개 URL(`https://undercover.eiaserinnys.me`)에서는 `UNDERCOVER_ALLOWED_SLACK_USER_IDS` 또는
@@ -81,18 +82,21 @@ pnpm dev
 - `translation_status`
 - `translation_error`
 - `translated_at`
+- `attachments_json`
 
 수동 DB migration 명령은 필요 없습니다.
 
 ## Slack 중계
 
-릴레이를 처음 초기화할 때 이미 DB에 있던 message ID는 영구적으로 `baseline_excluded`가 되어 발송되지 않습니다. 그 뒤 처음 들어온 ID만 `링크 | 한국어 | 원문`의 헤더 없는 3열 table block으로 전송하며, 같은 ID의 수정과 삭제는 기존 Slack 메시지에 반영합니다. 상태와 Slack `ts`는 같은 SQLite 파일에 저장되어 중복 이벤트나 재시작이 중복 발송을 만들지 않습니다.
+릴레이를 처음 초기화할 때 이미 DB에 있던 message ID는 영구적으로 `baseline_excluded`가 되어 발송되지 않습니다. 그 뒤 처음 들어온 ID만 굵은 `🔗 화자 | 채널` 헤더와 빈 줄 뒤 한국어 번역 전문을 하나의 `rich_text` section으로 전송하며, 같은 ID의 수정과 삭제는 기존 Slack 메시지에 반영합니다. 상태와 Slack `ts`는 같은 SQLite 파일에 저장되어 중복 이벤트나 재시작이 중복 발송을 만들지 않습니다.
+
+Discord 첨부가 있으면 서명된 `cdn.discordapp.com/attachments/...` 원본만 내려받아 Slack 공식 외부 업로드 3단계로 부모 메시지의 thread에 묶습니다. 봇 토큰에는 `files:write` scope가 필요합니다. 파일당 기본 20 MiB 상한을 넘거나 다운로드·Slack 업로드가 실패하면 텍스트 중계는 유지하고 부모 메시지에 Discord 원본 링크를 남깁니다. 업로드 도중 재시작된 첨부는 중복 방지를 위해 자동 재업로드하지 않고 링크 fallback으로 확정합니다. 본문 없이 첨부만 있는 메시지도 헤더와 첨부를 전달합니다.
 
 운영 예외는 로그의 message ID와 `slack_relay_state`에 남습니다.
 
 - `unknown`: post 응답을 받지 못해 성공 여부가 불명확합니다. 자동 재전송하지 말고 대상 채널을 먼저 확인한 뒤 상태를 수동 조정합니다.
 - `too_long`: 원문을 자르지 않습니다. Discord 원문이 제한 아래로 수정되면 다시 처리됩니다.
-- `empty`: 빈 본문은 보내지 않습니다. 내용이 추가되면 다시 처리됩니다.
+- `empty`: 본문과 첨부가 모두 없는 메시지는 보내지 않습니다. 내용이나 첨부가 추가되면 다시 처리됩니다.
 
 ## Slack 로그인 운영 흐름
 
@@ -211,6 +215,7 @@ CODEX_CLI_PATH=
 UNDERCOVER_SLACK_RELAY_ENABLED=false
 UNDERCOVER_SLACK_RELAY_CHANNEL_ID=C0C291S3YFM
 UNDERCOVER_SLACK_RELAY_BOT_USER_ID=U0A8XJZ6Q5S
+UNDERCOVER_SLACK_RELAY_ATTACHMENT_MAX_BYTES=20971520
 SLACK_BOT_TOKEN=
 ```
 

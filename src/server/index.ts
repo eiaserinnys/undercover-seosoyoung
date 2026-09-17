@@ -31,7 +31,8 @@ if (
     relayStore = new SlackRelayStore(config.databasePath);
     relay = new SlackRelayService(relayStore, new SlackWebApiClient(config.slackRelay.botToken), {
       channelId: config.slackRelay.channelId,
-      botUserId: config.slackRelay.botUserId
+      botUserId: config.slackRelay.botUserId,
+      attachmentMaxBytes: config.slackRelay.attachmentMaxBytes
     });
     // Establish the no-send baseline before the collector can accept a new
     // Discord event.

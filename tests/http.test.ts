@@ -258,6 +258,7 @@ function streamMessage(): DiscordMessageRecord {
     authorName: "Lena",
     authorAvatarUrl: null,
     contentOriginal: "Please translate this.",
+    attachments: [],
     translationKo: null,
     translationStatus: "pending",
     translationError: null,
